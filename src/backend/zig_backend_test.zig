@@ -144,13 +144,21 @@ test "dispatches print on the argument type" {
     try testing.expect(std.mem.indexOf(u8, as_str, "printLineInt") == null);
 }
 
-test "emits division and remainder as builtins that trap" {
+test "emits division and remainder through checked runtime helpers" {
     const gpa = testing.allocator;
     const out = try emitText(gpa, "fn main() {\n    println(7 / 2)\n    println(7 % 2)\n}\n");
     defer gpa.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "@divTrunc(") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "@rem(") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "(try rt.div(@as(i64, 7), @as(i64, 2)))") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "(try rt.rem(@as(i64, 7), @as(i64, 2)))") != null);
+}
+
+test "array indexing goes through the runtime bounds check" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa, "fn main() {\n    let a = [1, 2, 3]\n    let i = 1\n    println(a[i])\n}\n");
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "v0_a[try rt.index(3, v1_i)]") != null);
 }
 
 test "parenthesises binary operands to preserve precedence" {

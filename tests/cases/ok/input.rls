@@ -1,0 +1,9 @@
+fn main(alloc: Allocator) {
+    let first = read_line(alloc)
+    let second = read_line(alloc)
+    let missing = read_line(alloc)
+    println(first)
+    println(second)
+    println(missing.len())
+    println(first.len())
+}

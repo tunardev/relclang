@@ -1,0 +1,5 @@
+fn main() {
+    let mut z = 0
+    z = z + 0
+    println(10 / z)
+}

@@ -9,6 +9,8 @@ const build_options = @import("build_options");
 
 const err_dir = "tests/cases/err";
 const ok_dir = "tests/cases/ok";
+const fail_dir = "tests/cases/fail";
+const relc = "./zig-out/bin/relc";
 const showcase_rls = "examples/showcase.rls";
 const showcase_zig = "examples/showcase.generated.zig";
 
@@ -101,8 +103,15 @@ test "ok cases build and produce the expected output" {
         const rls_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ ok_dir, entry.name });
         defer gpa.free(rls_path);
 
+        const in_path = try std.fmt.allocPrint(gpa, "{s}/{s}.in", .{ ok_dir, entry.name[0 .. entry.name.len - 4] });
+        defer gpa.free(in_path);
+        const has_input = if (std.Io.Dir.cwd().access(io, in_path, .{})) true else |_| false;
+
+        const shell = try std.fmt.allocPrint(gpa, "{s} run {s} < {s}", .{ relc, rls_path, in_path });
+        defer gpa.free(shell);
+
         const result = try std.process.run(gpa, io, .{
-            .argv = &.{ "./zig-out/bin/relc", "run", rls_path },
+            .argv = if (has_input) &.{ "/bin/sh", "-c", shell } else &.{ relc, "run", rls_path },
         });
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
@@ -124,6 +133,51 @@ test "ok cases build and produce the expected output" {
         defer gpa.free(expected);
 
         try std.testing.expectEqualStrings(expected, result.stdout);
+        checked += 1;
+    }
+
+    try std.testing.expect(checked > 0);
+}
+
+test "fail cases stop with the expected runtime error" {
+    if (build_options.update_goldens) return;
+
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var dir = try std.Io.Dir.cwd().openDir(io, fail_dir, .{ .iterate = true });
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    var checked: usize = 0;
+
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".rls")) continue;
+
+        const rls_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ fail_dir, entry.name });
+        defer gpa.free(rls_path);
+
+        const result = try std.process.run(gpa, io, .{ .argv = &.{ relc, "run", rls_path } });
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+
+        const expected_name = try std.fmt.allocPrint(gpa, "{s}.expected", .{entry.name[0 .. entry.name.len - 4]});
+        defer gpa.free(expected_name);
+
+        const expected = try dir.readFileAlloc(io, expected_name, gpa, .limited(1 << 20));
+        defer gpa.free(expected);
+        const wanted = std.mem.trimEnd(u8, expected, "\n");
+
+        if (result.term == .exited and result.term.exited == 0) {
+            std.debug.print("{s} was expected to fail but exited cleanly\n", .{entry.name});
+            return error.UnexpectedSuccess;
+        }
+
+        if (std.mem.indexOf(u8, result.stderr, wanted) == null) {
+            std.debug.print("{s} did not report `{s}`:\n{s}\n", .{ entry.name, wanted, result.stderr });
+            return error.WrongFailure;
+        }
         checked += 1;
     }
 

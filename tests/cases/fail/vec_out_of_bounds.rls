@@ -1,0 +1,4 @@
+fn main(alloc: Allocator) {
+    let v: Vec<Int> = Vec.new(alloc)
+    println(v.get(3))
+}

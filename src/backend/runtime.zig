@@ -3,7 +3,7 @@ pub const file_name = "relastic_rt.zig";
 pub const source =
     \\const std = @import("std");
     \\
-    \\pub const Error = error{ WriteFailed, OutOfMemory };
+    \\pub const Error = error{ WriteFailed, ReadFailed, OutOfMemory, IndexOutOfBounds, DivisionByZero };
     \\
     \\pub const Allocator = std.mem.Allocator;
     \\
@@ -47,16 +47,38 @@ pub const source =
     \\    }
     \\};
     \\
+    \\var stdin_buf: [4096]u8 = undefined;
+    \\var stdin_reader: ?std.Io.File.Reader = null;
+    \\
     \\pub fn readLine(gpa: Allocator) Error!String {
-    \\    const io = io_instance orelse return error.WriteFailed;
-    \\    var out: String = .init(gpa);
-    \\    var buf: [4096]u8 = undefined;
-    \\    var fr = std.Io.File.stdin().readerStreaming(io, &buf);
-    \\    fr.interface.streamDelimiter(&out.list, gpa, '\n') catch |err| switch (err) {
-    \\        error.EndOfStream => {},
-    \\        else => return error.OutOfMemory,
+    \\    const io = io_instance orelse return error.ReadFailed;
+    \\    if (stdin_reader == null) stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buf);
+    \\    const reader = &stdin_reader.?.interface;
+    \\
+    \\    var sink: std.Io.Writer.Allocating = .init(gpa);
+    \\    errdefer sink.deinit();
+    \\    _ = reader.streamDelimiterEnding(&sink.writer, '\n') catch |err| switch (err) {
+    \\        error.WriteFailed => return error.OutOfMemory,
+    \\        error.ReadFailed => return error.ReadFailed,
     \\    };
-    \\    return out;
+    \\    if (reader.bufferedLen() > 0) reader.toss(1);
+    \\    if (sink.writer.end > 0 and sink.writer.buffer[sink.writer.end - 1] == '\r') sink.writer.end -= 1;
+    \\    return .{ .list = sink.toArrayList(), .gpa = gpa };
+    \\}
+    \\
+    \\pub fn index(len: usize, i: i64) Error!usize {
+    \\    if (i < 0 or i >= len) return error.IndexOutOfBounds;
+    \\    return @intCast(i);
+    \\}
+    \\
+    \\pub fn div(a: i64, b: i64) Error!i64 {
+    \\    if (b == 0) return error.DivisionByZero;
+    \\    return @divTrunc(a, b);
+    \\}
+    \\
+    \\pub fn rem(a: i64, b: i64) Error!i64 {
+    \\    if (b == 0) return error.DivisionByZero;
+    \\    return @rem(a, b);
     \\}
     \\
     \\pub fn printLineString(s: *const String) Error!void {
@@ -83,19 +105,16 @@ pub const source =
     \\            self.list.append(self.gpa, value) catch return error.OutOfMemory;
     \\        }
     \\
-    \\        pub fn get(self: *const Self, index: i64) Error!T {
-    \\            if (index < 0 or index >= self.list.items.len) return error.OutOfMemory;
-    \\            return self.list.items[@intCast(index)];
+    \\        pub fn get(self: *const Self, i: i64) Error!T {
+    \\            return self.list.items[try index(self.list.items.len, i)];
     \\        }
     \\
-    \\        pub fn ref(self: *const Self, index: i64) Error!*const T {
-    \\            if (index < 0 or index >= self.list.items.len) return error.OutOfMemory;
-    \\            return &self.list.items[@intCast(index)];
+    \\        pub fn ref(self: *const Self, i: i64) Error!*const T {
+    \\            return &self.list.items[try index(self.list.items.len, i)];
     \\        }
     \\
-    \\        pub fn set(self: *Self, index: i64, value: T) Error!void {
-    \\            if (index < 0 or index >= self.list.items.len) return error.OutOfMemory;
-    \\            const slot = &self.list.items[@intCast(index)];
+    \\        pub fn set(self: *Self, i: i64, value: T) Error!void {
+    \\            const slot = &self.list.items[try index(self.list.items.len, i)];
     \\            drop(slot);
     \\            slot.* = value;
     \\        }

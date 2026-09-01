@@ -143,11 +143,11 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
 
         .binary => |b| switch (b.op) {
             .div, .rem => {
-                try w.print("{s}(", .{binOpText(b.op)});
+                try w.print("(try {s}(", .{binOpText(b.op)});
                 try emitExpr(w, program, f, lbl, b.lhs.*);
                 try w.writeAll(", ");
                 try emitExpr(w, program, f, lbl, b.rhs.*);
-                try w.writeAll(")");
+                try w.writeAll("))");
             },
             else => {
                 try w.writeAll("(");
@@ -228,9 +228,9 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
 
         .index => |x| {
             try emitExpr(w, program, f, lbl, x.base.*);
-            try w.writeAll("[@as(usize, @intCast(");
+            try w.print("[try rt.index({d}, ", .{x.base.typeOf().array.len});
             try emitExpr(w, program, f, lbl, x.index.*);
-            try w.writeAll("))]");
+            try w.writeAll(")]");
         },
 
         .enum_lit => |lit| {
@@ -429,8 +429,8 @@ pub fn binOpText(op: tir.BinOp) []const u8 {
         .add => "+",
         .sub => "-",
         .mul => "*",
-        .div => "@divTrunc",
-        .rem => "@rem",
+        .div => "rt.div",
+        .rem => "rt.rem",
         .eq => "==",
         .ne => "!=",
         .lt => "<",

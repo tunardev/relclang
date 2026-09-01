@@ -150,16 +150,19 @@ pub fn run(
     }
 
     try w.flush();
+    try e.flush();
 
-    const app = std.process.run(arena, io, .{ .argv = &.{exe_path} }) catch |err| {
+    var app = std.process.spawn(io, .{ .argv = &.{exe_path} }) catch |err| {
         try e.print("cannot run `{s}`: {s}\n", .{ exe_path, @errorName(err) });
         return 1;
     };
 
-    try w.writeAll(app.stdout);
-    try e.writeAll(app.stderr);
+    const term = app.wait(io) catch |err| {
+        try e.print("cannot wait for `{s}`: {s}\n", .{ exe_path, @errorName(err) });
+        return 1;
+    };
 
-    return switch (app.term) {
+    return switch (term) {
         .exited => |code| code,
         else => 1,
     };
