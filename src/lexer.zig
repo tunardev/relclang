@@ -74,6 +74,21 @@ pub fn tokenize(
             continue;
         }
 
+        if (i + 1 < text.len) {
+            const two: ?Kind = switch (c) {
+                '=' => if (text[i + 1] == '=') Kind.eq_eq else null,
+                '!' => if (text[i + 1] == '=') Kind.bang_eq else null,
+                '<' => if (text[i + 1] == '=') Kind.le else null,
+                '>' => if (text[i + 1] == '=') Kind.ge else null,
+                else => null,
+            };
+            if (two) |kind| {
+                try out.append(arena, .{ .kind = kind, .span = .{ .start = i, .end = i + 2 } });
+                i += 2;
+                continue;
+            }
+        }
+
         if (c == '=' and i + 1 < text.len and text[i + 1] == '>') {
             try out.append(arena, .{ .kind = .fat_arrow, .span = .{ .start = i, .end = i + 2 } });
             i += 2;
@@ -103,6 +118,8 @@ pub fn tokenize(
             ';' => .semicolon,
             '[' => .l_bracket,
             ']' => .r_bracket,
+            '<' => .lt,
+            '>' => .gt,
             else => null,
         };
 
@@ -189,9 +206,18 @@ fn lexString(
 fn keywordOf(name: []const u8) ?Kind {
     if (std.mem.eql(u8, name, "fn")) return .kw_fn;
     if (std.mem.eql(u8, name, "let")) return .kw_let;
+    if (std.mem.eql(u8, name, "mut")) return .kw_mut;
     if (std.mem.eql(u8, name, "struct")) return .kw_struct;
     if (std.mem.eql(u8, name, "enum")) return .kw_enum;
     if (std.mem.eql(u8, name, "match")) return .kw_match;
+    if (std.mem.eql(u8, name, "if")) return .kw_if;
+    if (std.mem.eql(u8, name, "else")) return .kw_else;
+    if (std.mem.eql(u8, name, "while")) return .kw_while;
+    if (std.mem.eql(u8, name, "true")) return .kw_true;
+    if (std.mem.eql(u8, name, "false")) return .kw_false;
+    if (std.mem.eql(u8, name, "and")) return .kw_and;
+    if (std.mem.eql(u8, name, "or")) return .kw_or;
+    if (std.mem.eql(u8, name, "not")) return .kw_not;
     return null;
 }
 

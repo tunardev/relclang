@@ -13,10 +13,39 @@ pub const BinOp = enum {
     mul,
     div,
     rem,
+    eq,
+    ne,
+    lt,
+    gt,
+    le,
+    ge,
+    logical_and,
+    logical_or,
 };
 
 pub const UnOp = enum {
     neg,
+    not,
+};
+
+pub const BoolConst = struct {
+    value: bool,
+    ty: types.Type,
+    span: Span,
+};
+
+pub const If = struct {
+    cond: *const Expr,
+    then_block: Block,
+    else_block: ?Block,
+    ty: types.Type,
+    span: Span,
+};
+
+pub const While = struct {
+    cond: *const Expr,
+    body: Block,
+    span: Span,
 };
 
 pub const StringConst = struct {
@@ -120,6 +149,7 @@ pub const CallFunction = struct {
 pub const Expr = union(enum) {
     string_const: StringConst,
     int_const: IntConst,
+    bool_const: BoolConst,
     local_ref: LocalRef,
     binary: Binary,
     unary: Unary,
@@ -131,11 +161,14 @@ pub const Expr = union(enum) {
     index: Index,
     enum_lit: EnumLit,
     match: Match,
+    if_expr: If,
+    while_expr: While,
 
     pub fn typeOf(e: Expr) types.Type {
         return switch (e) {
             .string_const => |s| s.ty,
             .int_const => |i| i.ty,
+            .bool_const => |b| b.ty,
             .local_ref => |l| l.ty,
             .binary => |b| b.ty,
             .unary => |u| u.ty,
@@ -147,6 +180,8 @@ pub const Expr = union(enum) {
             .index => |x| x.ty,
             .enum_lit => |lit| lit.ty,
             .match => |m| m.ty,
+            .if_expr => |i| i.ty,
+            .while_expr => .void,
         };
     }
 
@@ -154,6 +189,7 @@ pub const Expr = union(enum) {
         return switch (e) {
             .string_const => |s| s.span,
             .int_const => |i| i.span,
+            .bool_const => |b| b.span,
             .local_ref => |l| l.span,
             .binary => |b| b.span,
             .unary => |u| u.span,
@@ -165,6 +201,8 @@ pub const Expr = union(enum) {
             .index => |x| x.span,
             .enum_lit => |lit| lit.span,
             .match => |m| m.span,
+            .if_expr => |i| i.span,
+            .while_expr => |x| x.span,
         };
     }
 };
@@ -176,20 +214,29 @@ pub const LetDecl = struct {
     span: Span,
 };
 
+pub const Assign = struct {
+    target: Expr,
+    value: Expr,
+    span: Span,
+};
+
 pub const Stmt = union(enum) {
     expr: Expr,
     let: LetDecl,
-    ret_value: Expr,
+    assign: Assign,
 };
 
 pub const Local = struct {
     name: []const u8,
     ty: types.Type,
     used: bool,
+    is_mut: bool,
+    assigned: bool,
 };
 
 pub const Block = struct {
     stmts: []const Stmt,
+    result: ?*const Expr,
 };
 
 pub const Function = struct {

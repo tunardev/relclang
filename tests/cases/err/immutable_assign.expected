@@ -1,0 +1,9 @@
+error[E0027]: `count` is not mutable
+
+  --> immutable_assign.rls:3:5
+   |
+ 3 |     count = 2
+   |     ^^^^^ cannot assign to this
+   |
+help: declare it with `let mut count = ...`
+

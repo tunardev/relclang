@@ -16,6 +16,7 @@ const Parser = struct {
     tokens: []const Token,
     diags: *diagnostics.Diagnostics,
     pos: usize,
+    no_struct_lit: bool = false,
 
     fn peek(p: *Parser) Kind {
         return p.tokens[p.pos].kind;
@@ -234,7 +235,7 @@ const Parser = struct {
     fn parseMatch(p: *Parser) Error!?ast.Expr {
         const kw = p.advance();
 
-        const scrutinee = try p.parseExpr() orelse return null;
+        const scrutinee = try p.parseCondition() orelse return null;
 
         p.skipNewlines();
         _ = try p.expect(.l_brace, "expected `{`", "a match needs a block of arms") orelse return null;
@@ -389,7 +390,12 @@ const Parser = struct {
 
             const before = p.pos;
 
-            if (try p.parseStmt()) |stmt| {
+            const saved_no_struct = p.no_struct_lit;
+            p.no_struct_lit = false;
+            const parsed_stmt = try p.parseStmt();
+            p.no_struct_lit = saved_no_struct;
+
+            if (parsed_stmt) |stmt| {
                 try stmts.append(p.arena, stmt);
                 if (p.peek() != .r_brace and p.peek() != .eof and p.peek() != .newline) {
                     try p.diags.err(
@@ -424,10 +430,27 @@ const Parser = struct {
     fn parseStmt(p: *Parser) Error!?ast.Stmt {
         if (p.peek() != .kw_let) {
             const e = try p.parseExpr() orelse return null;
+
+            if (p.peek() == .equals) {
+                _ = p.advance();
+                const value = try p.parseExpr() orelse return null;
+                return .{ .assign = .{
+                    .target = e,
+                    .value = value,
+                    .span = Span.merge(e.spanOf(), value.spanOf()),
+                } };
+            }
+
             return .{ .expr = e };
         }
 
         const kw = p.advance();
+
+        var is_mut = false;
+        if (p.peek() == .kw_mut) {
+            _ = p.advance();
+            is_mut = true;
+        }
 
         const name_tok = try p.expect(.ident, "expected a variable name", null) orelse return null;
 
@@ -444,6 +467,7 @@ const Parser = struct {
         return .{ .let = .{
             .name = name_tok.value,
             .name_span = name_tok.span,
+            .is_mut = is_mut,
             .ty = ty,
             .init = init_expr,
             .span = Span.merge(kw.span, init_expr.spanOf()),
@@ -452,11 +476,19 @@ const Parser = struct {
 
     fn precedenceOf(kind: Kind) ?struct { op: ast.BinOp, level: u8 } {
         return switch (kind) {
-            .plus => .{ .op = .add, .level = 1 },
-            .minus => .{ .op = .sub, .level = 1 },
-            .star => .{ .op = .mul, .level = 2 },
-            .slash => .{ .op = .div, .level = 2 },
-            .percent => .{ .op = .rem, .level = 2 },
+            .kw_or => .{ .op = .logical_or, .level = 1 },
+            .kw_and => .{ .op = .logical_and, .level = 2 },
+            .eq_eq => .{ .op = .eq, .level = 3 },
+            .bang_eq => .{ .op = .ne, .level = 3 },
+            .lt => .{ .op = .lt, .level = 3 },
+            .gt => .{ .op = .gt, .level = 3 },
+            .le => .{ .op = .le, .level = 3 },
+            .ge => .{ .op = .ge, .level = 3 },
+            .plus => .{ .op = .add, .level = 4 },
+            .minus => .{ .op = .sub, .level = 4 },
+            .star => .{ .op = .mul, .level = 5 },
+            .slash => .{ .op = .div, .level = 5 },
+            .percent => .{ .op = .rem, .level = 5 },
             else => null,
         };
     }
@@ -493,19 +525,99 @@ const Parser = struct {
     }
 
     fn parseUnary(p: *Parser) Error!?ast.Expr {
-        if (p.peek() != .minus) return p.parsePostfix();
+        const op: ast.UnOp = switch (p.peek()) {
+            .minus => .neg,
+            .kw_not => .not,
+            else => return p.parsePostfix(),
+        };
 
         const op_tok = p.advance();
         const operand = try p.parseUnary() orelse return null;
 
         const ptr = try p.arena.create(ast.Expr);
         ptr.* = operand;
+        const merged = Span.merge(op_tok.span, operand.spanOf());
 
         return .{ .unary = .{
-            .op = .neg,
+            .op = op,
             .operand = ptr,
             .op_span = op_tok.span,
-            .span = Span.merge(op_tok.span, operand.spanOf()),
+            .span = merged,
+        } };
+    }
+
+    fn parseCondition(p: *Parser) Error!?ast.Expr {
+        const saved = p.no_struct_lit;
+        p.no_struct_lit = true;
+        defer p.no_struct_lit = saved;
+        return p.parseExpr();
+    }
+
+    fn parseBlock2(p: *Parser) Error!?ast.Block {
+        return p.parseBlock();
+    }
+
+    fn parseIf(p: *Parser) Error!?ast.Expr {
+        const kw = p.advance();
+
+        const cond = try p.parseCondition() orelse return null;
+        p.skipNewlines();
+
+        const then_block = try p.parseBlock2() orelse return null;
+
+        var else_block: ?ast.Block = null;
+        var else_if: ?*const ast.Expr = null;
+        var end = then_block.span;
+
+        const save = p.pos;
+        p.skipNewlines();
+
+        if (p.peek() == .kw_else) {
+            _ = p.advance();
+            p.skipNewlines();
+
+            if (p.peek() == .kw_if) {
+                const nested = try p.parseIf() orelse return null;
+                const ptr = try p.arena.create(ast.Expr);
+                ptr.* = nested;
+                else_if = ptr;
+                end = nested.spanOf();
+            } else {
+                const b = try p.parseBlock2() orelse return null;
+                else_block = b;
+                end = b.span;
+            }
+        } else {
+            p.pos = save;
+        }
+
+        const cond_ptr = try p.arena.create(ast.Expr);
+        cond_ptr.* = cond;
+
+        return .{ .if_expr = .{
+            .cond = cond_ptr,
+            .then_block = then_block,
+            .else_block = else_block,
+            .else_if = else_if,
+            .span = Span.merge(kw.span, end),
+        } };
+    }
+
+    fn parseWhile(p: *Parser) Error!?ast.Expr {
+        const kw = p.advance();
+
+        const cond = try p.parseCondition() orelse return null;
+        p.skipNewlines();
+
+        const body = try p.parseBlock2() orelse return null;
+
+        const cond_ptr = try p.arena.create(ast.Expr);
+        cond_ptr.* = cond;
+
+        return .{ .while_expr = .{
+            .cond = cond_ptr,
+            .body = body,
+            .span = Span.merge(kw.span, body.span),
         } };
     }
 
@@ -586,6 +698,12 @@ const Parser = struct {
     fn parsePrimary(p: *Parser) Error!?ast.Expr {
         switch (p.peek()) {
             .kw_match => return try p.parseMatch(),
+            .kw_if => return try p.parseIf(),
+            .kw_while => return try p.parseWhile(),
+            .kw_true, .kw_false => {
+                const t = p.advance();
+                return .{ .boolean = .{ .value = t.kind == .kw_true, .span = t.span } };
+            },
             .l_bracket => {
                 const open = p.advance();
                 var elems: std.ArrayList(ast.Expr) = .empty;
@@ -628,7 +746,7 @@ const Parser = struct {
             },
             .ident => {
                 if (p.tokens[p.pos + 1].kind == .l_paren) return try p.parseCall();
-                if (p.tokens[p.pos + 1].kind == .l_brace and startsUpper(p.current().value)) {
+                if (!p.no_struct_lit and p.tokens[p.pos + 1].kind == .l_brace and startsUpper(p.current().value)) {
                     return try p.parseStructLit();
                 }
                 const t = p.advance();

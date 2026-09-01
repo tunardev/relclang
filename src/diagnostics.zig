@@ -30,6 +30,8 @@ pub const Code = enum {
     non_exhaustive,
     unreachable_arm,
     bad_pattern,
+    not_assignable,
+    immutable_assign,
 
     pub fn id(c: Code) []const u8 {
         return switch (c) {
@@ -58,6 +60,8 @@ pub const Code = enum {
             .non_exhaustive => "E0023",
             .unreachable_arm => "E0024",
             .bad_pattern => "E0025",
+            .not_assignable => "E0026",
+            .immutable_assign => "E0027",
         };
     }
 };
@@ -393,7 +397,7 @@ test "every code has a distinct id" {
         .missing_return,   .bad_signature,      .unknown_struct,
         .unknown_field,    .missing_field,      .recursive_struct,
         .not_indexable,    .non_exhaustive,     .unreachable_arm,
-        .bad_pattern,
+        .bad_pattern,     .not_assignable,     .immutable_assign,
     };
     for (codes, 0..) |a, i| {
         for (codes[i + 1 ..]) |b| {

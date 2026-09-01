@@ -20,6 +20,10 @@ pub const source =
     \\    w.flush() catch return error.WriteFailed;
     \\}
     \\
+    \\pub fn printLineBool(v: bool) Error!void {
+    \\    return printLine(if (v) "true" else "false");
+    \\}
+    \\
     \\pub fn printLine(s: []const u8) Error!void {
     \\    const io = io_instance orelse return error.WriteFailed;
     \\    var buf: [4096]u8 = undefined;

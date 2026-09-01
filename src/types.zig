@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const Type = union(enum) {
     void,
+    bool,
     int,
     str,
     invalid,
@@ -17,6 +18,7 @@ pub const Type = union(enum) {
     pub fn eql(a: Type, b: Type) bool {
         return switch (a) {
             .void => b == .void,
+            .bool => b == .bool,
             .int => b == .int,
             .str => b == .str,
             .invalid => b == .invalid,
@@ -78,6 +80,7 @@ pub const Registry = struct {
 pub fn nameOf(arena: std.mem.Allocator, reg: Registry, t: Type) ![]const u8 {
     return switch (t) {
         .void => "Void",
+        .bool => "Bool",
         .int => "Int",
         .str => "Str",
         .invalid => "<invalid>",

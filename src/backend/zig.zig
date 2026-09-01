@@ -57,7 +57,13 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         try w.writeAll(") rt.Error!");
         try emitType(w, program, f.ret);
         try w.writeAll(" {\n");
-        for (f.body.stmts) |stmt| try emitStmt(w, program, f, stmt);
+        var lbl: u32 = 0;
+        try emitBlockBody(w, program, f, &lbl, f.body, 1);
+        if (f.body.result) |result| {
+            try w.writeAll("    return ");
+            try emitExpr(w, program, f, &lbl, result.*);
+            try w.writeAll(";\n");
+        }
         try w.writeAll("}\n\n");
 
         if (f.is_entry) entry = f.name;
@@ -76,6 +82,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
 fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void {
     switch (ty) {
         .void, .invalid => try w.writeAll("void"),
+        .bool => try w.writeAll("bool"),
         .int => try w.writeAll("i64"),
         .str => try w.writeAll("[]const u8"),
         .strukt => |i| try w.print("S{d}_{s}", .{ i, program.structs[i].name }),
@@ -87,32 +94,106 @@ fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void 
     }
 }
 
-fn emitStmt(w: *std.Io.Writer, program: tir.Program, f: tir.Function, stmt: tir.Stmt) Error!void {
+fn indent(w: *std.Io.Writer, level: usize) Error!void {
+    try w.splatByteAll(' ', level * 4);
+}
+
+fn emitBlockBody(
+    w: *std.Io.Writer,
+    program: tir.Program,
+    f: tir.Function,
+    lbl: *u32,
+    block: tir.Block,
+    level: usize,
+) Error!void {
+    for (block.stmts) |stmt| try emitStmt(w, program, f, lbl, stmt, level);
+}
+
+fn isBlockForm(e: tir.Expr) bool {
+    return switch (e) {
+        .match => |m| m.ty == .void or m.ty == .invalid,
+        .if_expr => |i| i.ty == .void or i.ty == .invalid,
+        .while_expr => true,
+        else => false,
+    };
+}
+
+fn emitStmt(
+    w: *std.Io.Writer,
+    program: tir.Program,
+    f: tir.Function,
+    lbl: *u32,
+    stmt: tir.Stmt,
+    level: usize,
+) Error!void {
     switch (stmt) {
-        .ret_value => |e| {
-            try w.writeAll("    return ");
-            try emitExpr(w, program, f, e);
-            try w.writeAll(";\n");
-        },
         .expr => |e| {
-            const block_form = e == .match and (e.match.ty == .void or e.match.ty == .invalid);
-            try w.writeAll("    ");
-            try emitExpr(w, program, f, e);
-            try w.writeAll(if (block_form) "\n" else ";\n");
+            try indent(w, level);
+            try emitExpr(w, program, f, lbl, e);
+            try w.writeAll(if (isBlockForm(e)) "\n" else ";\n");
+        },
+        .assign => |a| {
+            try indent(w, level);
+            try emitExpr(w, program, f, lbl, a.target);
+            try w.writeAll(" = ");
+            try emitExpr(w, program, f, lbl, a.value);
+            try w.writeAll(";\n");
         },
         .let => |l| {
-            try w.writeAll("    const ");
+            try indent(w, level);
+            try w.writeAll(if (f.locals[l.slot].assigned) "var " else "const ");
             try emitLocalName(w, f, l.slot);
             try w.writeAll(" = ");
-            try emitExpr(w, program, f, l.init);
+            try emitExpr(w, program, f, lbl, l.init);
             try w.writeAll(";\n");
             if (!f.locals[l.slot].used) {
-                try w.writeAll("    _ = ");
+                try indent(w, level);
+                try w.writeAll("_ = ");
                 try emitLocalName(w, f, l.slot);
                 try w.writeAll(";\n");
             }
         },
     }
+}
+
+fn emitValueBlock(
+    w: *std.Io.Writer,
+    program: tir.Program,
+    f: tir.Function,
+    lbl: *u32,
+    block: tir.Block,
+) Error!void {
+    const id = lbl.*;
+    lbl.* += 1;
+
+    try w.print("b{d}: {{\n", .{id});
+    try emitBlockBody(w, program, f, lbl, block, 3);
+    try indent(w, 3);
+    try w.print("break :b{d} ", .{id});
+    if (block.result) |r| {
+        try emitExpr(w, program, f, lbl, r.*);
+    } else {
+        try w.writeAll("{}");
+    }
+    try w.writeAll(";\n    }");
+}
+
+fn emitVoidBlock(
+    w: *std.Io.Writer,
+    program: tir.Program,
+    f: tir.Function,
+    lbl: *u32,
+    block: tir.Block,
+) Error!void {
+    try w.writeAll("{\n");
+    try emitBlockBody(w, program, f, lbl, block, 3);
+    if (block.result) |r| {
+        try indent(w, 3);
+        try emitExpr(w, program, f, lbl, r.*);
+        try w.writeAll(";\n");
+    }
+    try indent(w, 1);
+    try w.writeAll("}");
 }
 
 fn emitLocalName(w: *std.Io.Writer, f: tir.Function, slot: u32) Error!void {
@@ -126,50 +207,66 @@ fn binOpText(op: tir.BinOp) []const u8 {
         .mul => "*",
         .div => "@divTrunc",
         .rem => "@rem",
+        .eq => "==",
+        .ne => "!=",
+        .lt => "<",
+        .gt => ">",
+        .le => "<=",
+        .ge => ">=",
+        .logical_and => "and",
+        .logical_or => "or",
     };
 }
 
-fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, expr: tir.Expr) Error!void {
+fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32, expr: tir.Expr) Error!void {
     switch (expr) {
         .string_const => |s| try emitZigString(w, s.value),
 
         .int_const => |i| try w.print("@as(i64, {d})", .{i.value}),
 
+        .bool_const => |b| try w.writeAll(if (b.value) "true" else "false"),
+
         .local_ref => |l| try emitLocalName(w, f, l.slot),
 
         .unary => |u| {
-            try w.writeAll("-(");
-            try emitExpr(w, program, f, u.operand.*);
+            try w.writeAll(switch (u.op) {
+                .neg => "-(",
+                .not => "!(",
+            });
+            try emitExpr(w, program, f, lbl, u.operand.*);
             try w.writeAll(")");
         },
 
         .binary => |b| switch (b.op) {
             .div, .rem => {
                 try w.print("{s}(", .{binOpText(b.op)});
-                try emitExpr(w, program, f, b.lhs.*);
+                try emitExpr(w, program, f, lbl, b.lhs.*);
                 try w.writeAll(", ");
-                try emitExpr(w, program, f, b.rhs.*);
+                try emitExpr(w, program, f, lbl, b.rhs.*);
                 try w.writeAll(")");
             },
             else => {
                 try w.writeAll("(");
-                try emitExpr(w, program, f, b.lhs.*);
+                try emitExpr(w, program, f, lbl, b.lhs.*);
                 try w.print(" {s} ", .{binOpText(b.op)});
-                try emitExpr(w, program, f, b.rhs.*);
+                try emitExpr(w, program, f, lbl, b.rhs.*);
                 try w.writeAll(")");
             },
         },
 
         .call_builtin => |c| switch (c.builtin) {
             .print_line => {
-                const fn_name = if (c.args.len == 1 and c.args[0].typeOf() == .int)
-                    "printLineInt"
-                else
-                    "printLine";
+                const fn_name = if (c.args.len != 1)
+                    "printLine"
+                else switch (c.args[0].typeOf()) {
+                    .int => "printLineInt",
+                    .bool => "printLineBool",
+                    else => "printLine",
+                };
                 try w.print("(try rt.{s}(", .{fn_name});
                 for (c.args, 0..) |arg, i| {
                     if (i > 0) try w.writeAll(", ");
-                    try emitExpr(w, program, f, arg);
+                    try emitExpr(w, program, f, lbl, arg);
                 }
                 try w.writeAll("))");
             },
@@ -179,7 +276,7 @@ fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, expr: tir.
             try w.print("(try {s}{s}(", .{ prefix, program.functions[c.target].name });
             for (c.args, 0..) |arg, i| {
                 if (i > 0) try w.writeAll(", ");
-                try emitExpr(w, program, f, arg);
+                try emitExpr(w, program, f, lbl, arg);
             }
             try w.writeAll("))");
         },
@@ -190,13 +287,13 @@ fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, expr: tir.
             for (s.fields, 0..) |value, i| {
                 if (i > 0) try w.writeAll(", ");
                 try w.print(".f{d}_{s} = ", .{ i, def.fields[i].name });
-                try emitExpr(w, program, f, value);
+                try emitExpr(w, program, f, lbl, value);
             }
             try w.writeAll(" }");
         },
 
         .field => |fa| {
-            try emitExpr(w, program, f, fa.base.*);
+            try emitExpr(w, program, f, lbl, fa.base.*);
             try w.print(".f{d}_{s}", .{ fa.field, program.structs[fa.strukt].fields[fa.field].name });
         },
 
@@ -206,15 +303,15 @@ fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, expr: tir.
             try w.writeAll("{ ");
             for (a.elems, 0..) |e, i| {
                 if (i > 0) try w.writeAll(", ");
-                try emitExpr(w, program, f, e);
+                try emitExpr(w, program, f, lbl, e);
             }
             try w.writeAll(" }");
         },
 
         .index => |x| {
-            try emitExpr(w, program, f, x.base.*);
+            try emitExpr(w, program, f, lbl, x.base.*);
             try w.writeAll("[@as(usize, @intCast(");
-            try emitExpr(w, program, f, x.index.*);
+            try emitExpr(w, program, f, lbl, x.index.*);
             try w.writeAll("))]");
         },
 
@@ -229,23 +326,54 @@ fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, expr: tir.
                 for (lit.payload, 0..) |value, i| {
                     if (i > 0) try w.writeAll(", ");
                     try w.print(".f{d} = ", .{i});
-                    try emitExpr(w, program, f, value);
+                    try emitExpr(w, program, f, lbl, value);
                 }
                 try w.writeAll(" }");
             }
             try w.writeAll(" }");
         },
 
-        .match => |m| try emitMatch(w, program, f, m),
+        .match => |m| try emitMatch(w, program, f, lbl, m),
+
+        .if_expr => |node| {
+            const is_void = node.ty == .void or node.ty == .invalid;
+
+            try w.writeAll("if (");
+            try emitExpr(w, program, f, lbl, node.cond.*);
+            try w.writeAll(") ");
+
+            if (is_void) {
+                try emitVoidBlock(w, program, f, lbl, node.then_block);
+                if (node.else_block) |b| {
+                    try w.writeAll(" else ");
+                    try emitVoidBlock(w, program, f, lbl, b);
+                }
+            } else {
+                try emitValueBlock(w, program, f, lbl, node.then_block);
+                try w.writeAll(" else ");
+                if (node.else_block) |b| {
+                    try emitValueBlock(w, program, f, lbl, b);
+                } else {
+                    try w.writeAll("unreachable");
+                }
+            }
+        },
+
+        .while_expr => |node| {
+            try w.writeAll("while (");
+            try emitExpr(w, program, f, lbl, node.cond.*);
+            try w.writeAll(") ");
+            try emitVoidBlock(w, program, f, lbl, node.body);
+        },
     }
 }
 
-fn emitMatch(w: *std.Io.Writer, program: tir.Program, f: tir.Function, m: tir.Match) Error!void {
+fn emitMatch(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32, m: tir.Match) Error!void {
     const def = program.enums[m.enumeration];
     const is_void = m.ty == .void or m.ty == .invalid;
 
     try w.writeAll("switch (");
-    try emitExpr(w, program, f, m.scrutinee.*);
+    try emitExpr(w, program, f, lbl, m.scrutinee.*);
     try w.writeAll(") {\n");
 
     for (m.arms) |arm| {
@@ -281,7 +409,7 @@ fn emitMatch(w: *std.Io.Writer, program: tir.Program, f: tir.Function, m: tir.Ma
 
         try w.writeAll("            ");
         if (!is_void) try w.writeAll("break :blk ");
-        try emitExpr(w, program, f, arm.body);
+        try emitExpr(w, program, f, lbl, arm.body);
         try w.writeAll(";\n        },\n");
     }
 

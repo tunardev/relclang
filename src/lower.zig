@@ -21,6 +21,12 @@ const Binding = struct {
     depth: u32,
 };
 
+const Place = struct {
+    slot: u32,
+    is_mut: bool,
+    name: []const u8,
+};
+
 const Fn = struct {
     arena: std.mem.Allocator,
     gpa: std.mem.Allocator,
@@ -51,8 +57,18 @@ const Fn = struct {
     }
 
     fn declare(f: *Fn, name: []const u8, ty: Type) Error!u32 {
+        return f.declareMut(name, ty, false);
+    }
+
+    fn declareMut(f: *Fn, name: []const u8, ty: Type, is_mut: bool) Error!u32 {
         const slot: u32 = @intCast(f.locals.items.len);
-        try f.locals.append(f.arena, .{ .name = name, .ty = ty, .used = false });
+        try f.locals.append(f.arena, .{
+            .name = name,
+            .ty = ty,
+            .used = false,
+            .is_mut = is_mut,
+            .assigned = false,
+        });
         try f.bindings.append(f.gpa, .{ .name = name, .slot = slot, .ty = ty, .depth = f.depth });
         return slot;
     }
@@ -101,25 +117,21 @@ pub fn run(
                     null,
                 );
             }
-            _ = try ctx.declare(param.name, info.params[i]);
+            _ = try ctx.declareMut(param.name, info.params[i], false);
             ctx.locals.items[i].used = true;
         }
 
         const param_count: u32 = @intCast(f.params.len);
 
-        var stmts: std.ArrayList(tir.Stmt) = .empty;
-        const last = f.body.stmts.len;
+        const body = try lowerBlock(&ctx, f.body, info.ret != .void);
 
-        for (f.body.stmts, 0..) |stmt, i| {
-            const is_last = i + 1 == last;
-            const lowered = try lowerStmt(&ctx, stmt) orelse continue;
-
-            if (is_last and info.ret != .void and lowered == .expr) {
-                const ty = lowered.expr.typeOf();
+        if (info.ret != .void) {
+            if (body.result) |result| {
+                const ty = result.typeOf();
                 if (!ty.isInvalid() and !Type.eql(ty, info.ret)) {
                     try diags.err(
                         .missing_return,
-                        lowered.expr.spanOf(),
+                        result.spanOf(),
                         "the final expression does not match the return type",
                         try diags.fmt("expected `{s}`, found `{s}`", .{
                             try symbols.typeName(diags.arena.allocator(), info.ret),
@@ -128,29 +140,7 @@ pub fn run(
                         null,
                     );
                 }
-                try stmts.append(arena, .{ .ret_value = lowered.expr });
-                continue;
-            }
-
-            if (lowered == .expr) {
-                const ty = lowered.expr.typeOf();
-                if (ty != .void and !ty.isInvalid()) {
-                    try diags.err(
-                        .unused_value,
-                        lowered.expr.spanOf(),
-                        try diags.fmt("this `{s}` value is not used", .{try symbols.typeName(diags.arena.allocator(), ty)}),
-                        "the value is discarded",
-                        "bind it with `let`, or remove it",
-                    );
-                }
-            }
-
-            try stmts.append(arena, lowered);
-        }
-
-        if (info.ret != .void) {
-            const returns = last > 0 and stmts.items.len > 0 and stmts.items[stmts.items.len - 1] == .ret_value;
-            if (!returns) {
+            } else {
                 try diags.err(
                     .missing_return,
                     if (f.ret_ty) |t| t.spanOf() else f.name_span,
@@ -170,7 +160,7 @@ pub fn run(
             .param_count = param_count,
             .ret = info.ret,
             .locals = try ctx.locals.toOwnedSlice(arena),
-            .body = .{ .stmts = try stmts.toOwnedSlice(arena) },
+            .body = body,
             .span = f.span,
         });
     }
@@ -182,9 +172,193 @@ pub fn run(
     };
 }
 
-fn lowerStmt(f: *Fn, stmt: ast.Stmt) Error!?tir.Stmt {
+fn rootPlace(f: *Fn, expr: tir.Expr) ?Place {
+    return switch (expr) {
+        .local_ref => |l| .{
+            .slot = l.slot,
+            .is_mut = f.locals.items[l.slot].is_mut,
+            .name = f.locals.items[l.slot].name,
+        },
+        .field => |fa| rootPlace(f, fa.base.*),
+        .index => |x| rootPlace(f, x.base.*),
+        else => null,
+    };
+}
+
+fn lowerAssign(f: *Fn, a: ast.Assign) Error!?tir.Stmt {
+    const target = try lowerExpr(f, a.target);
+    const value = try lowerExpr(f, a.value);
+
+    const place = rootPlace(f, target) orelse {
+        if (!target.typeOf().isInvalid()) {
+            try f.diags.err(
+                .not_assignable,
+                a.target.spanOf(),
+                "this expression cannot be assigned to",
+                "not a variable, field or element",
+                null,
+            );
+        }
+        return null;
+    };
+
+    if (!place.is_mut) {
+        try f.diags.err(
+            .immutable_assign,
+            a.target.spanOf(),
+            try f.diags.fmt("`{s}` is not mutable", .{place.name}),
+            "cannot assign to this",
+            try f.diags.fmt("declare it with `let mut {s} = ...`", .{place.name}),
+        );
+    }
+
+    f.locals.items[place.slot].assigned = true;
+
+    const want = target.typeOf();
+    const got = value.typeOf();
+    if (!want.isInvalid() and !got.isInvalid() and !Type.eql(want, got)) {
+        try f.diags.err(
+            .type_mismatch,
+            a.value.spanOf(),
+            "assigned value has the wrong type",
+            try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(want), try f.tyName(got) }),
+            null,
+        );
+    }
+
+    return .{ .assign = .{ .target = target, .value = value, .span = a.span } };
+}
+
+fn lowerBlock(f: *Fn, block: ast.Block, wants_value: bool) Error!tir.Block {
+    f.depth += 1;
+    const mark = f.bindings.items.len;
+    defer {
+        f.bindings.shrinkRetainingCapacity(mark);
+        f.depth -= 1;
+    }
+
+    var stmts: std.ArrayList(tir.Stmt) = .empty;
+    var result: ?*const tir.Expr = null;
+    const last = block.stmts.len;
+
+    for (block.stmts, 0..) |stmt, i| {
+        const is_last = i + 1 == last;
+        const lowered = try lowerStmt(f, stmt, is_last and wants_value) orelse continue;
+
+        if (is_last and wants_value and lowered == .expr) {
+            result = try f.box(lowered.expr);
+            continue;
+        }
+
+        if (lowered == .expr) {
+            const ty = lowered.expr.typeOf();
+            if (ty != .void and !ty.isInvalid()) {
+                try f.diags.err(
+                    .unused_value,
+                    lowered.expr.spanOf(),
+                    try f.diags.fmt("this `{s}` value is not used", .{try f.tyName(ty)}),
+                    "the value is discarded",
+                    "bind it with `let`, or remove it",
+                );
+            }
+        }
+
+        try stmts.append(f.arena, lowered);
+    }
+
+    return .{ .stmts = try stmts.toOwnedSlice(f.arena), .result = result };
+}
+
+fn lowerIf(f: *Fn, node: ast.If, wants_value: bool) Error!tir.Expr {
+    const cond = try lowerExpr(f, node.cond.*);
+    const cond_ty = cond.typeOf();
+
+    if (!cond_ty.isInvalid() and cond_ty != .bool) {
+        try f.diags.err(
+            .type_mismatch,
+            node.cond.spanOf(),
+            "a condition must be a `Bool`",
+            try f.diags.fmt("expected `Bool`, found `{s}`", .{try f.tyName(cond_ty)}),
+            null,
+        );
+    }
+
+    const has_else = node.else_block != null or node.else_if != null;
+    const want = wants_value;
+
+    const then_block = try lowerBlock(f, node.then_block, want);
+
+    var else_block: ?tir.Block = null;
+
+    if (node.else_if) |nested| {
+        const inner = try lowerIf(f, nested.if_expr, want);
+        if (want) {
+            else_block = .{ .stmts = &.{}, .result = try f.box(inner) };
+        } else {
+            var one: std.ArrayList(tir.Stmt) = .empty;
+            try one.append(f.arena, .{ .expr = inner });
+            else_block = .{ .stmts = try one.toOwnedSlice(f.arena), .result = null };
+        }
+    } else if (node.else_block) |b| {
+        else_block = try lowerBlock(f, b, want);
+    }
+
+    var ty: Type = .void;
+
+    if (wants_value and !has_else) {
+        try f.diags.err(
+            .missing_return,
+            node.span,
+            "an `if` used as a value needs an `else`",
+            "there is no `else` branch",
+            "add `else { ... }`",
+        );
+        return .{ .if_expr = .{
+            .cond = try f.box(cond),
+            .then_block = then_block,
+            .else_block = null,
+            .ty = .invalid,
+            .span = node.span,
+        } };
+    }
+
+    if (want) {
+        const then_ty = if (then_block.result) |r| r.typeOf() else Type.void;
+        const else_ty = if (else_block) |b| (if (b.result) |r| r.typeOf() else Type.void) else Type.void;
+
+        if (!then_ty.isInvalid() and !else_ty.isInvalid() and !Type.eql(then_ty, else_ty)) {
+            try f.diags.err(
+                .type_mismatch,
+                node.span,
+                "if branches must have the same type",
+                try f.diags.fmt("`then` is `{s}` but `else` is `{s}`", .{
+                    try f.tyName(then_ty),
+                    try f.tyName(else_ty),
+                }),
+                null,
+            );
+            ty = .invalid;
+        } else {
+            ty = if (then_ty.isInvalid()) else_ty else then_ty;
+        }
+    }
+
+    return .{ .if_expr = .{
+        .cond = try f.box(cond),
+        .then_block = then_block,
+        .else_block = else_block,
+        .ty = ty,
+        .span = node.span,
+    } };
+}
+
+fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {
     switch (stmt) {
-        .expr => |e| return .{ .expr = try lowerExpr(f, e) },
+        .expr => |e| {
+            if (e == .if_expr) return .{ .expr = try lowerIf(f, e.if_expr, wants_value) };
+            return .{ .expr = try lowerExpr(f, e) };
+        },
+        .assign => |a| return lowerAssign(f, a),
         .let => |l| {
             const init_expr = try lowerExpr(f, l.init);
             var ty = init_expr.typeOf();
@@ -228,7 +402,7 @@ fn lowerStmt(f: *Fn, stmt: ast.Stmt) Error!?tir.Stmt {
                 );
             }
 
-            const slot = try f.declare(l.name, ty);
+            const slot = try f.declareMut(l.name, ty, l.is_mut);
 
             return .{ .let = .{
                 .slot = slot,
@@ -460,6 +634,30 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         .call => |c| return lowerCall(f, c),
 
         .match => |m| return lowerMatch(f, m),
+
+        .boolean => |b| return .{ .bool_const = .{ .value = b.value, .ty = .bool, .span = b.span } },
+
+        .if_expr => |node| return lowerIf(f, node, true),
+
+        .while_expr => |node| {
+            const cond = try lowerExpr(f, node.cond.*);
+            const cond_ty = cond.typeOf();
+            if (!cond_ty.isInvalid() and cond_ty != .bool) {
+                try f.diags.err(
+                    .type_mismatch,
+                    node.cond.spanOf(),
+                    "a condition must be a `Bool`",
+                    try f.diags.fmt("expected `Bool`, found `{s}`", .{try f.tyName(cond_ty)}),
+                    null,
+                );
+            }
+            const body = try lowerBlock(f, node.body, false);
+            return .{ .while_expr = .{
+                .cond = try f.box(cond),
+                .body = body,
+                .span = node.span,
+            } };
+        },
 
         .struct_lit => |s| return lowerStructLit(f, s),
 
@@ -930,12 +1128,21 @@ fn binOpOf(op: ast.BinOp) tir.BinOp {
         .mul => .mul,
         .div => .div,
         .rem => .rem,
+        .eq => .eq,
+        .ne => .ne,
+        .lt => .lt,
+        .gt => .gt,
+        .le => .le,
+        .ge => .ge,
+        .logical_and => .logical_and,
+        .logical_or => .logical_or,
     };
 }
 
 fn unOpOf(op: ast.UnOp) tir.UnOp {
     return switch (op) {
         .neg => .neg,
+        .not => .not,
     };
 }
 
@@ -943,497 +1150,4 @@ fn builtinOf(b: resolve.Builtin) tir.Builtin {
     return switch (b) {
         .println => .print_line,
     };
-}
-
-const testing = std.testing;
-
-const Lowered = struct {
-    arena: std.heap.ArenaAllocator,
-    diags: diagnostics.Diagnostics,
-    symbols: resolve.SymbolTable,
-    program: tir.Program,
-
-    fn deinit(l: *Lowered) void {
-        l.symbols.deinit();
-        l.diags.deinit();
-        l.arena.deinit();
-    }
-
-    fn has(l: Lowered, code: diagnostics.Code) bool {
-        for (l.diags.list.items) |item| {
-            if (item.code == code) return true;
-        }
-        return false;
-    }
-};
-
-fn lowerText(gpa: std.mem.Allocator, text: []const u8) !Lowered {
-    var arena_state: std.heap.ArenaAllocator = .init(gpa);
-    var d: diagnostics.Diagnostics = .init(gpa);
-    const file: source.SourceFile = .{ .path = "t.rls", .text = text };
-    const toks = try lexer.tokenize(arena_state.allocator(), file, &d);
-    const parsed = try parser.parse(arena_state.allocator(), toks, &d);
-    var symbols = try resolve.run(arena_state.allocator(), gpa, parsed, &d);
-    const program = try run(arena_state.allocator(), gpa, parsed, &symbols, &d);
-    return .{ .arena = arena_state, .diags = d, .symbols = symbols, .program = program };
-}
-
-test "lowers println to the print_line builtin" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(\"hi\")\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const f = l.program.functions[0];
-    try testing.expect(f.is_entry);
-
-    const call = f.body.stmts[0].expr.call_builtin;
-    try testing.expectEqual(tir.Builtin.print_line, call.builtin);
-    try testing.expectEqualStrings("hi", call.args[0].string_const.value);
-}
-
-test "only main is marked as the entry point" {
-    var l = try lowerText(testing.allocator, "fn helper() {\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.program.functions[0].is_entry);
-    try testing.expect(l.program.functions[1].is_entry);
-}
-
-test "lowers a user function call" {
-    var l = try lowerText(testing.allocator, "fn helper() {\n}\nfn main() {\n    helper()\n}\n");
-    defer l.deinit();
-    try testing.expectEqual(@as(usize, 0), l.program.functions[1].body.stmts[0].expr.call_function.target);
-}
-
-test "let allocates a slot and records its type" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let x = 10\n    println(x)\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const f = l.program.functions[0];
-    try testing.expectEqual(@as(usize, 1), f.locals.len);
-    try testing.expectEqualStrings("x", f.locals[0].name);
-    try testing.expectEqual(types.Type.int, f.locals[0].ty);
-    try testing.expect(f.locals[0].used);
-
-    const decl = f.body.stmts[0].let;
-    try testing.expectEqual(@as(u32, 0), decl.slot);
-    try testing.expectEqual(@as(i64, 10), decl.init.int_const.value);
-}
-
-test "slots increase in declaration order" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let a = 1\n    let b = 2\n    println(a + b)\n}\n");
-    defer l.deinit();
-
-    const f = l.program.functions[0];
-    try testing.expectEqual(@as(u32, 0), f.body.stmts[0].let.slot);
-    try testing.expectEqual(@as(u32, 1), f.body.stmts[1].let.slot);
-
-    const sum = f.body.stmts[2].expr.call_builtin.args[0].binary;
-    try testing.expectEqual(@as(u32, 0), sum.lhs.local_ref.slot);
-    try testing.expectEqual(@as(u32, 1), sum.rhs.local_ref.slot);
-}
-
-test "an unused local is marked unused" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let x = 1\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.program.functions[0].locals[0].used);
-}
-
-test "precedence puts multiplication under addition" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(2 + 3 * 4)\n}\n");
-    defer l.deinit();
-
-    const top = l.program.functions[0].body.stmts[0].expr.call_builtin.args[0].binary;
-    try testing.expectEqual(tir.BinOp.add, top.op);
-    try testing.expectEqual(@as(i64, 2), top.lhs.int_const.value);
-    try testing.expectEqual(tir.BinOp.mul, top.rhs.binary.op);
-}
-
-test "subtraction is left associative" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(10 - 3 - 2)\n}\n");
-    defer l.deinit();
-
-    const top = l.program.functions[0].body.stmts[0].expr.call_builtin.args[0].binary;
-    try testing.expectEqual(tir.BinOp.sub, top.op);
-    try testing.expectEqual(tir.BinOp.sub, top.lhs.binary.op);
-    try testing.expectEqual(@as(i64, 2), top.rhs.int_const.value);
-}
-
-test "underscores are stripped from integer literals" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(1_000)\n}\n");
-    defer l.deinit();
-    try testing.expectEqual(@as(i64, 1000), l.program.functions[0].body.stmts[0].expr.call_builtin.args[0].int_const.value);
-}
-
-test "an annotation overrides the inferred type only when it agrees" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let x: Int = 10\n    println(x)\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-    try testing.expectEqual(types.Type.int, l.program.functions[0].locals[0].ty);
-}
-
-test "unknown variable reports E0012" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(z)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.unknown_variable));
-}
-
-test "duplicate binding reports E0011" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let x = 1\n    let x = 2\n    println(x)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.duplicate_binding));
-}
-
-test "string arithmetic reports E0013" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(\"a\" + \"b\")\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.invalid_operand));
-}
-
-test "mixed operands report E0013" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let n = 1\n    println(n + \"x\")\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.invalid_operand));
-}
-
-test "an annotation mismatch reports E0008" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let x: Str = 10\n    println(x)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.type_mismatch));
-}
-
-test "binding a void call reports E0013" {
-    var l = try lowerText(testing.allocator, "fn helper() {\n}\nfn main() {\n    let x = helper()\n    println(x)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.invalid_operand));
-}
-
-test "an out of range literal reports E0014" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(99999999999999999999)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.integer_overflow));
-}
-
-test "the largest int literal is accepted" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(9223372036854775807)\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-}
-
-test "unknown function reports E0004" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    nope(\"hi\")\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.unknown_function));
-}
-
-test "a bad operand does not cascade into a second error" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(\"a\" + \"b\")\n}\n");
-    defer l.deinit();
-    try testing.expectEqual(@as(usize, 1), l.diags.list.items.len);
-}
-
-test "spans survive lowering" {
-    const text = "fn main() {\n    println(\"hi\")\n}\n";
-    var l = try lowerText(testing.allocator, text);
-    defer l.deinit();
-    const arg = l.program.functions[0].body.stmts[0].expr.call_builtin.args[0].string_const;
-    try testing.expectEqualStrings("\"hi\"", text[arg.span.start..arg.span.end]);
-}
-
-test "parameters become the first locals" {
-    var l = try lowerText(testing.allocator, "fn add(a: Int, b: Int) -> Int {\n    a + b\n}\nfn main() {\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const f = l.program.functions[0];
-    try testing.expectEqual(@as(u32, 2), f.param_count);
-    try testing.expectEqual(types.Type.int, f.ret);
-    try testing.expectEqualStrings("a", f.locals[0].name);
-    try testing.expectEqualStrings("b", f.locals[1].name);
-}
-
-test "the final expression becomes a return value" {
-    var l = try lowerText(testing.allocator, "fn f() -> Int {\n    7\n}\nfn main() {\n}\n");
-    defer l.deinit();
-
-    const stmts = l.program.functions[0].body.stmts;
-    try testing.expectEqual(@as(i64, 7), stmts[stmts.len - 1].ret_value.int_const.value);
-}
-
-test "a void function has no return value statement" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    println(\"hi\")\n}\n");
-    defer l.deinit();
-    try testing.expect(l.program.functions[0].body.stmts[0] == .expr);
-    try testing.expectEqual(types.Type.void, l.program.functions[0].ret);
-}
-
-test "a call takes its type from the signature" {
-    var l = try lowerText(testing.allocator, "fn f() -> Int {\n    1\n}\nfn main() {\n    println(f())\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-    const call = l.program.functions[1].body.stmts[0].expr.call_builtin.args[0].call_function;
-    try testing.expectEqual(types.Type.int, call.ty);
-}
-
-test "a missing return value reports E0016" {
-    var l = try lowerText(testing.allocator, "fn f() -> Int {\n    println(\"x\")\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.missing_return));
-}
-
-test "an empty body for a returning function reports E0016" {
-    var l = try lowerText(testing.allocator, "fn f() -> Int {\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.missing_return));
-}
-
-test "an unused value reports E0015" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    1 + 2\n    println(\"x\")\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.unused_value));
-}
-
-test "wrong argument count to a user function reports E0007" {
-    var l = try lowerText(testing.allocator, "fn add(a: Int, b: Int) -> Int {\n    a + b\n}\nfn main() {\n    println(add(1))\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.wrong_arg_count));
-}
-
-test "wrong argument type to a user function reports E0008" {
-    var l = try lowerText(testing.allocator, "fn add(a: Int, b: Int) -> Int {\n    a + b\n}\nfn main() {\n    println(add(1, \"x\"))\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.type_mismatch));
-}
-
-test "a duplicate parameter reports E0011" {
-    var l = try lowerText(testing.allocator, "fn f(a: Int, a: Int) -> Int {\n    a\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.duplicate_binding));
-}
-
-test "a str parameter round trips" {
-    var l = try lowerText(testing.allocator, "fn greet(name: Str) {\n    println(name)\n}\nfn main() {\n    greet(\"hi\")\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-    try testing.expectEqual(types.Type.str, l.program.functions[0].locals[0].ty);
-}
-
-test "a struct literal fills fields in declaration order" {
-    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n    y: Int\n}\nfn main() {\n    let p = P { y: 2, x: 1 }\n    println(p.x)\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const lit = l.program.functions[0].body.stmts[0].let.init.struct_lit;
-    try testing.expectEqual(@as(i64, 1), lit.fields[0].int_const.value);
-    try testing.expectEqual(@as(i64, 2), lit.fields[1].int_const.value);
-}
-
-test "field access resolves to a slot index and type" {
-    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n    y: Str\n}\nfn main() {\n    let p = P { x: 1, y: \"a\" }\n    println(p.y)\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const access = l.program.functions[0].body.stmts[1].expr.call_builtin.args[0].field;
-    try testing.expectEqual(@as(u32, 1), access.field);
-    try testing.expect(types.Type.eql(.str, access.ty));
-}
-
-test "an array literal infers its element type and length" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1, 2, 3]\n    println(a[0])\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const ty = l.program.functions[0].locals[0].ty;
-    try testing.expect(ty == .array);
-    try testing.expectEqual(@as(u64, 3), ty.array.len);
-    try testing.expect(types.Type.eql(.int, ty.array.elem.*));
-}
-
-test "indexing yields the element type" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [\"x\"]\n    println(a[0])\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-    const idx = l.program.functions[0].body.stmts[1].expr.call_builtin.args[0].index;
-    try testing.expect(types.Type.eql(.str, idx.ty));
-}
-
-test "an unknown field reports E0019" {
-    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n}\nfn main() {\n    let p = P { x: 1 }\n    println(p.z)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.unknown_field));
-}
-
-test "a missing field reports E0020" {
-    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n    y: Int\n}\nfn main() {\n    let p = P { x: 1 }\n    println(p.x)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.missing_field));
-}
-
-test "a duplicated field in a literal reports E0011" {
-    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n}\nfn main() {\n    let p = P { x: 1, x: 2 }\n    println(p.x)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.duplicate_binding));
-}
-
-test "a constant out of bounds index reports E0022" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1, 2]\n    println(a[5])\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.not_indexable));
-}
-
-test "a negative constant index reports E0022" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1, 2]\n    println(a[-1])\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.not_indexable));
-}
-
-test "indexing a non array reports E0022" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let n = 3\n    println(n[0])\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.not_indexable));
-}
-
-test "a non int index reports E0008" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1]\n    println(a[\"x\"])\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.type_mismatch));
-}
-
-test "mixed array element types report E0008" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1, \"two\"]\n    println(a[0])\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.type_mismatch));
-}
-
-test "an empty array literal cannot be inferred" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let a = []\n    println(a[0])\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.invalid_operand));
-}
-
-test "printing a struct reports a type mismatch" {
-    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n}\nfn main() {\n    let p = P { x: 1 }\n    println(p)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.type_mismatch));
-}
-
-test "nested arrays type correctly" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let g = [[1, 2], [3, 4]]\n    println(g[0][1])\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-    const ty = l.program.functions[0].locals[0].ty;
-    try testing.expectEqual(@as(u64, 2), ty.array.len);
-    try testing.expectEqual(@as(u64, 2), ty.array.elem.array.len);
-}
-
-test "a unit variant lowers to an enum literal" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn main() {\n    let c = Red\n    println(1)\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const lit = l.program.functions[0].body.stmts[0].let.init.enum_lit;
-    try testing.expectEqual(@as(u32, 0), lit.variant);
-    try testing.expectEqual(@as(usize, 0), lit.payload.len);
-}
-
-test "a payload variant carries its arguments" {
-    var l = try lowerText(testing.allocator, "enum S {\n    Pair(Int, Int)\n}\nfn main() {\n    let s = Pair(1, 2)\n    println(1)\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const lit = l.program.functions[0].body.stmts[0].let.init.enum_lit;
-    try testing.expectEqual(@as(usize, 2), lit.payload.len);
-    try testing.expectEqual(@as(i64, 2), lit.payload[1].int_const.value);
-}
-
-test "match binds payload values to local slots" {
-    var l = try lowerText(testing.allocator, "enum S {\n    Pair(Int, Int)\n}\nfn f(s: S) -> Int {\n    match s {\n        Pair(a, b) => a + b\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-
-    try testing.expect(!l.diags.hasErrors());
-    const m = l.program.functions[0].body.stmts[0].ret_value.match;
-    try testing.expectEqual(@as(usize, 1), m.arms.len);
-    try testing.expectEqual(@as(usize, 2), m.arms[0].bindings.len);
-    try testing.expect(types.Type.eql(.int, m.ty));
-}
-
-test "an exhaustive match needs no wildcard" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n        Green => 2\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-}
-
-test "a missing variant reports E0023" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.non_exhaustive));
-}
-
-test "a wildcard makes a match exhaustive" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n        _ => 0\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-}
-
-test "a repeated variant reports E0024" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n        Red => 2\n        Green => 3\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.unreachable_arm));
-}
-
-test "an arm after a wildcard reports E0024" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        _ => 0\n        Red => 1\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.unreachable_arm));
-}
-
-test "an unknown variant in a pattern reports E0025" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n}\nfn f(c: C) -> Int {\n    match c {\n        Blue => 1\n        _ => 0\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.bad_pattern));
-}
-
-test "the wrong binding count reports E0025 without cascading" {
-    var l = try lowerText(testing.allocator, "enum S {\n    Pair(Int, Int)\n}\nfn f(s: S) -> Int {\n    match s {\n        Pair(a) => a\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.bad_pattern));
-    try testing.expect(!l.has(.unknown_variable));
-    try testing.expectEqual(@as(usize, 1), l.diags.list.items.len);
-}
-
-test "arms of different types report E0008" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n        Green => \"two\"\n    }\n}\nfn main() {\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.type_mismatch));
-}
-
-test "matching a non enum reports E0025" {
-    var l = try lowerText(testing.allocator, "fn main() {\n    let n = 3\n    println(match n {\n        _ => 1\n    })\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.bad_pattern));
-}
-
-test "a wrong payload arity reports E0007" {
-    var l = try lowerText(testing.allocator, "enum S {\n    One(Int)\n}\nfn main() {\n    let s = One(1, 2)\n    println(1)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.wrong_arg_count));
-}
-
-test "a wrong payload type reports E0008" {
-    var l = try lowerText(testing.allocator, "enum S {\n    One(Int)\n}\nfn main() {\n    let s = One(\"x\")\n    println(1)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.type_mismatch));
-}
-
-test "pattern bindings do not leak out of their arm" {
-    var l = try lowerText(testing.allocator, "enum S {\n    One(Int)\n}\nfn f(s: S) -> Int {\n    match s {\n        One(v) => v\n    }\n}\nfn main() {\n    println(v)\n}\n");
-    defer l.deinit();
-    try testing.expect(l.has(.unknown_variable));
-}
-
-test "a match used as a statement is void" {
-    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn main() {\n    let c = Red\n    match c {\n        Red => println(\"r\")\n        Green => println(\"g\")\n    }\n}\n");
-    defer l.deinit();
-    try testing.expect(!l.diags.hasErrors());
-    try testing.expect(types.Type.eql(.void, l.program.functions[0].body.stmts[1].expr.match.ty));
 }

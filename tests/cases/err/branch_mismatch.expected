@@ -1,0 +1,8 @@
+error[E0008]: if branches must have the same type
+
+  --> branch_mismatch.rls:2:13
+   |
+ 2 |     let x = if true { 1 } else { "two" }
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `then` is `Int` but `else` is `Str`
+   |
+

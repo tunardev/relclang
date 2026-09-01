@@ -24,13 +24,13 @@ pub const Builtin = enum {
 
     pub fn accepts(b: Builtin, index: usize, ty: types.Type) bool {
         return switch (b) {
-            .println => index == 0 and (ty == .str or ty == .int),
+            .println => index == 0 and (ty == .str or ty == .int or ty == .bool),
         };
     }
 
     pub fn describeParam(b: Builtin, index: usize) []const u8 {
         return switch (b) {
-            .println => if (index == 0) "`Str` or `Int`" else "nothing",
+            .println => if (index == 0) "`Str`, `Int` or `Bool`" else "nothing",
         };
     }
 };

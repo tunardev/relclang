@@ -11,6 +11,7 @@ test {
     _ = @import("typecheck.zig");
     _ = @import("tir.zig");
     _ = @import("lower.zig");
+    _ = @import("lower_test.zig");
     _ = @import("backend/runtime.zig");
     _ = @import("backend/zig.zig");
     _ = @import("compile.zig");
