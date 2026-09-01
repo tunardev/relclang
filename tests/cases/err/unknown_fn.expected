@@ -1,4 +1,4 @@
-error[E0004]: unknown function
+error[E0004]: unknown function `greet`
 
   --> unknown_fn.rls:2:5
    |

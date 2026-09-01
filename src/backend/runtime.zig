@@ -11,6 +11,15 @@ pub const source =
     \\    io_instance = io;
     \\}
     \\
+    \\pub fn printLineInt(v: i64) Error!void {
+    \\    const io = io_instance orelse return error.WriteFailed;
+    \\    var buf: [64]u8 = undefined;
+    \\    var fw = std.Io.File.stdout().writerStreaming(io, &buf);
+    \\    const w = &fw.interface;
+    \\    w.print("{d}\n", .{v}) catch return error.WriteFailed;
+    \\    w.flush() catch return error.WriteFailed;
+    \\}
+    \\
     \\pub fn printLine(s: []const u8) Error!void {
     \\    const io = io_instance orelse return error.WriteFailed;
     \\    var buf: [4096]u8 = undefined;

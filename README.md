@@ -7,11 +7,18 @@ currently generates Zig, which is then compiled to a binary.
 
 ## Status
 
-Very early. Right now it compiles this and nothing more:
+Very early. Right now it handles functions, `let` bindings, integers,
+strings and arithmetic:
 
     fn main() {
-        println("Hello, Relastic!")
+        let x = 10
+        let y = 20
+        println(x + y)
     }
+
+There is one integer type, `Int`, which is 64 bits and signed. Division
+truncates toward zero and dividing by zero stops the program. Bindings
+are immutable and cannot be redeclared in the same scope.
 
 ## Build
 

@@ -1,0 +1,12 @@
+fn describe() {
+    println("values:")
+}
+
+fn main() {
+    describe()
+    let a: Int = 3
+    let b = a * a
+    let label = "sum:"
+    println(label)
+    println(b + a)
+}

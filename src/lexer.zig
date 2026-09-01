@@ -40,9 +40,30 @@ pub fn tokenize(
             while (i < text.len and isIdentContinue(text[i])) i += 1;
             const name = text[start..i];
             try out.append(arena, .{
-                .kind = if (std.mem.eql(u8, name, "fn")) .kw_fn else .ident,
+                .kind = keywordOf(name) orelse .ident,
                 .span = .{ .start = start, .end = i },
                 .value = name,
+            });
+            continue;
+        }
+
+        if (isDigit(c)) {
+            const start = i;
+            while (i < text.len and (isDigit(text[i]) or text[i] == '_')) i += 1;
+            const digits = text[start..i];
+
+            if (i < text.len and isIdentStart(text[i])) {
+                const bad: Span = .{ .start = start, .end = i + 1 };
+                try diags.err(.invalid_number, bad, "invalid number literal", "digits run straight into a letter", null);
+                while (i < text.len and isIdentContinue(text[i])) i += 1;
+                try out.append(arena, .{ .kind = .invalid, .span = .{ .start = start, .end = i } });
+                continue;
+            }
+
+            try out.append(arena, .{
+                .kind = .int,
+                .span = .{ .start = start, .end = i },
+                .value = digits,
             });
             continue;
         }
@@ -59,6 +80,13 @@ pub fn tokenize(
             '{' => .l_brace,
             '}' => .r_brace,
             ',' => .comma,
+            ':' => .colon,
+            '=' => .equals,
+            '+' => .plus,
+            '-' => .minus,
+            '*' => .star,
+            '/' => .slash,
+            '%' => .percent,
             else => null,
         };
 
@@ -140,6 +168,16 @@ fn lexString(
         .span = .{ .start = start, .end = pos },
         .value = try buf.toOwnedSlice(arena),
     };
+}
+
+fn keywordOf(name: []const u8) ?Kind {
+    if (std.mem.eql(u8, name, "fn")) return .kw_fn;
+    if (std.mem.eql(u8, name, "let")) return .kw_let;
+    return null;
+}
+
+fn isDigit(c: u8) bool {
+    return c >= '0' and c <= '9';
 }
 
 fn isIdentStart(c: u8) bool {
@@ -352,4 +390,67 @@ test "a string span covers both quotes" {
 
     const toks = try tokenize(arena_state.allocator(), file, &d);
     try testing.expectEqualStrings("\"hi\"", text[toks[0].span.start..toks[0].span.end]);
+}
+
+test "lexes integer literals" {
+    const gpa = testing.allocator;
+    const kinds = try kindsOf(gpa, "let x = 10");
+    defer gpa.free(kinds);
+    try testing.expectEqualSlices(token.Kind, &.{ .kw_let, .ident, .equals, .int, .eof }, kinds);
+}
+
+test "let is a keyword but letter is an identifier" {
+    const gpa = testing.allocator;
+    const kinds = try kindsOf(gpa, "let letter");
+    defer gpa.free(kinds);
+    try testing.expectEqualSlices(token.Kind, &.{ .kw_let, .ident, .eof }, kinds);
+}
+
+test "lexes every arithmetic operator" {
+    const gpa = testing.allocator;
+    const kinds = try kindsOf(gpa, "+ - * / %");
+    defer gpa.free(kinds);
+    try testing.expectEqualSlices(token.Kind, &.{ .plus, .minus, .star, .slash, .percent, .eof }, kinds);
+}
+
+test "lexes a type annotation" {
+    const gpa = testing.allocator;
+    const kinds = try kindsOf(gpa, "let x: Int = 1");
+    defer gpa.free(kinds);
+    try testing.expectEqualSlices(token.Kind, &.{ .kw_let, .ident, .colon, .ident, .equals, .int, .eof }, kinds);
+}
+
+test "integer literal value is the digit text" {
+    const gpa = testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+
+    const file: source.SourceFile = .{ .path = "t.rls", .text = "1_000" };
+    var d: diagnostics.Diagnostics = .init(gpa);
+    defer d.deinit();
+
+    const toks = try tokenize(arena_state.allocator(), file, &d);
+    try testing.expect(!d.hasErrors());
+    try testing.expectEqualStrings("1_000", toks[0].value);
+}
+
+test "a number running into a letter reports E0010" {
+    const gpa = testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+
+    const file: source.SourceFile = .{ .path = "t.rls", .text = "let x = 12abc" };
+    var d: diagnostics.Diagnostics = .init(gpa);
+    defer d.deinit();
+
+    _ = try tokenize(arena_state.allocator(), file, &d);
+    try testing.expect(d.hasErrors());
+    try testing.expectEqual(diagnostics.Code.invalid_number, d.list.items[0].code.?);
+}
+
+test "operators do not need surrounding spaces" {
+    const gpa = testing.allocator;
+    const kinds = try kindsOf(gpa, "1+2*3");
+    defer gpa.free(kinds);
+    try testing.expectEqualSlices(token.Kind, &.{ .int, .plus, .int, .star, .int, .eof }, kinds);
 }

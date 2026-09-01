@@ -17,11 +17,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
 
     for (program.functions) |f| {
         try w.print("fn {s}{s}() rt.Error!void {{\n", .{ prefix, f.name });
-        for (f.body.stmts) |stmt| {
-            try w.writeAll("    ");
-            try emitExpr(w, program, stmt.expr);
-            try w.writeAll(";\n");
-        }
+        for (f.body.stmts) |stmt| try emitStmt(w, program, f, stmt);
         try w.writeAll("}\n\n");
 
         if (f.is_entry) entry = f.name;
@@ -37,24 +33,93 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
     return aw.written();
 }
 
-fn emitExpr(w: *std.Io.Writer, program: tir.Program, expr: tir.Expr) Error!void {
+fn emitStmt(w: *std.Io.Writer, program: tir.Program, f: tir.Function, stmt: tir.Stmt) Error!void {
+    switch (stmt) {
+        .expr => |e| {
+            try w.writeAll("    ");
+            try emitExpr(w, program, f, e);
+            try w.writeAll(";\n");
+        },
+        .let => |l| {
+            try w.writeAll("    const ");
+            try emitLocalName(w, f, l.slot);
+            try w.writeAll(" = ");
+            try emitExpr(w, program, f, l.init);
+            try w.writeAll(";\n");
+            if (!f.locals[l.slot].used) {
+                try w.writeAll("    _ = ");
+                try emitLocalName(w, f, l.slot);
+                try w.writeAll(";\n");
+            }
+        },
+    }
+}
+
+fn emitLocalName(w: *std.Io.Writer, f: tir.Function, slot: u32) Error!void {
+    try w.print("v{d}_{s}", .{ slot, f.locals[slot].name });
+}
+
+fn binOpText(op: tir.BinOp) []const u8 {
+    return switch (op) {
+        .add => "+",
+        .sub => "-",
+        .mul => "*",
+        .div => "@divTrunc",
+        .rem => "@rem",
+    };
+}
+
+fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, expr: tir.Expr) Error!void {
     switch (expr) {
         .string_const => |s| try emitZigString(w, s.value),
+
+        .int_const => |i| try w.print("@as(i64, {d})", .{i.value}),
+
+        .local_ref => |l| try emitLocalName(w, f, l.slot),
+
+        .unary => |u| {
+            try w.writeAll("-(");
+            try emitExpr(w, program, f, u.operand.*);
+            try w.writeAll(")");
+        },
+
+        .binary => |b| switch (b.op) {
+            .div, .rem => {
+                try w.print("{s}(", .{binOpText(b.op)});
+                try emitExpr(w, program, f, b.lhs.*);
+                try w.writeAll(", ");
+                try emitExpr(w, program, f, b.rhs.*);
+                try w.writeAll(")");
+            },
+            else => {
+                try w.writeAll("(");
+                try emitExpr(w, program, f, b.lhs.*);
+                try w.print(" {s} ", .{binOpText(b.op)});
+                try emitExpr(w, program, f, b.rhs.*);
+                try w.writeAll(")");
+            },
+        },
+
         .call_builtin => |c| switch (c.builtin) {
             .print_line => {
-                try w.writeAll("try rt.printLine(");
+                const fn_name = if (c.args.len == 1 and c.args[0].typeOf() == .int)
+                    "printLineInt"
+                else
+                    "printLine";
+                try w.print("try rt.{s}(", .{fn_name});
                 for (c.args, 0..) |arg, i| {
                     if (i > 0) try w.writeAll(", ");
-                    try emitExpr(w, program, arg);
+                    try emitExpr(w, program, f, arg);
                 }
                 try w.writeAll(")");
             },
         },
+
         .call_function => |c| {
             try w.print("try {s}{s}(", .{ prefix, program.functions[c.target].name });
             for (c.args, 0..) |arg, i| {
                 if (i > 0) try w.writeAll(", ");
-                try emitExpr(w, program, arg);
+                try emitExpr(w, program, f, arg);
             }
             try w.writeAll(")");
         },
@@ -84,7 +149,6 @@ const diagnostics = @import("../diagnostics.zig");
 const lexer = @import("../lexer.zig");
 const parser = @import("../parser.zig");
 const resolve = @import("../resolve.zig");
-const typecheck = @import("../typecheck.zig");
 const lower = @import("../lower.zig");
 
 fn emitText(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -100,8 +164,7 @@ fn emitText(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     const parsed = try parser.parse(arena, toks, &d);
     var symbols = try resolve.run(gpa, parsed, &d);
     defer symbols.deinit();
-    try typecheck.run(parsed, &symbols, &d);
-    const program = try lower.run(arena, parsed, &symbols);
+    const program = try lower.run(arena, gpa, parsed, &symbols, &d);
 
     const out = try emit(arena, program);
     return gpa.dupe(u8, out);
@@ -170,4 +233,61 @@ test "backend never imports the syntax layer" {
     try testing.expect(std.mem.indexOf(u8, impl, "@import(\"../lexer.zig\")") == null);
     try testing.expect(std.mem.indexOf(u8, impl, "@import(\"../token.zig\")") == null);
     try testing.expect(std.mem.indexOf(u8, impl, "@import(\"../tir.zig\")") != null);
+}
+
+test "emits locals with slot prefixed names" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa, "fn main() {\n    let x = 10\n    println(x)\n}\n");
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "const v0_x = @as(i64, 10);") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "rt.printLineInt(v0_x)") != null);
+}
+
+test "discards only unused locals" {
+    const gpa = testing.allocator;
+
+    const unused = try emitText(gpa, "fn main() {\n    let x = 1\n}\n");
+    defer gpa.free(unused);
+    try testing.expect(std.mem.indexOf(u8, unused, "_ = v0_x;") != null);
+
+    const used = try emitText(gpa, "fn main() {\n    let x = 1\n    println(x)\n}\n");
+    defer gpa.free(used);
+    try testing.expect(std.mem.indexOf(u8, used, "_ = v0_x;") == null);
+}
+
+test "dispatches print on the argument type" {
+    const gpa = testing.allocator;
+
+    const as_int = try emitText(gpa, "fn main() {\n    println(1)\n}\n");
+    defer gpa.free(as_int);
+    try testing.expect(std.mem.indexOf(u8, as_int, "rt.printLineInt(") != null);
+
+    const as_str = try emitText(gpa, "fn main() {\n    println(\"a\")\n}\n");
+    defer gpa.free(as_str);
+    try testing.expect(std.mem.indexOf(u8, as_str, "rt.printLine(") != null);
+    try testing.expect(std.mem.indexOf(u8, as_str, "printLineInt") == null);
+}
+
+test "emits division and remainder as builtins that trap" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa, "fn main() {\n    println(7 / 2)\n    println(7 % 2)\n}\n");
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "@divTrunc(") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "@rem(") != null);
+}
+
+test "parenthesises binary operands to preserve precedence" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa, "fn main() {\n    println((2 + 3) * 4)\n}\n");
+    defer gpa.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "((@as(i64, 2) + @as(i64, 3)) * @as(i64, 4))") != null);
+}
+
+test "emits negation" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa, "fn main() {\n    println(-5)\n}\n");
+    defer gpa.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "-(@as(i64, 5))") != null);
 }

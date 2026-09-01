@@ -3,6 +3,6 @@ error[E0008]: argument type mismatch
   --> bad_arg_type.rls:5:13
    |
  5 |     println(helper())
-   |             ^^^^^^^^ expected `Str`, found `Void`
+   |             ^^^^^^^^ expected `Str` or `Int`, found `Void`
    |
 

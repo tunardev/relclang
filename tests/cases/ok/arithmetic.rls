@@ -1,0 +1,13 @@
+fn main() {
+    let x = 10
+    let y = 20
+    println(x + y)
+    println(2 + 3 * 4)
+    println((2 + 3) * 4)
+    println(10 - 3 - 2)
+    println(7 / 2)
+    println(-7 / 2)
+    println(7 % 3)
+    println(-5 + 3)
+    println(1_000 + 1)
+}

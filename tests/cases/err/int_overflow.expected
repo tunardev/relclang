@@ -1,0 +1,9 @@
+error[E0014]: integer literal is out of range
+
+  --> int_overflow.rls:2:13
+   |
+ 2 |     println(99999999999999999999)
+   |             ^^^^^^^^^^^^^^^^^^^^ does not fit in `Int`
+   |
+help: `Int` holds values from -9223372036854775808 to 9223372036854775807
+

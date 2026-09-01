@@ -112,8 +112,8 @@ const Parser = struct {
 
             const before = p.pos;
 
-            if (try p.parseExpr()) |e| {
-                try stmts.append(p.arena, .{ .expr = e });
+            if (try p.parseStmt()) |stmt| {
+                try stmts.append(p.arena, stmt);
                 if (p.peek() != .r_brace and p.peek() != .eof and p.peek() != .newline) {
                     try p.diags.err(
                         .unexpected_token,
@@ -144,19 +144,123 @@ const Parser = struct {
         while (p.peek() != .newline and p.peek() != .r_brace and p.peek() != .eof) p.pos += 1;
     }
 
+    fn parseStmt(p: *Parser) Error!?ast.Stmt {
+        if (p.peek() != .kw_let) {
+            const e = try p.parseExpr() orelse return null;
+            return .{ .expr = e };
+        }
+
+        const kw = p.advance();
+
+        const name_tok = try p.expect(.ident, "expected a variable name", null) orelse return null;
+
+        var ty_name: ?[]const u8 = null;
+        var ty_span: ?Span = null;
+        if (p.peek() == .colon) {
+            _ = p.advance();
+            const ty_tok = try p.expect(.ident, "expected a type name", null) orelse return null;
+            ty_name = ty_tok.value;
+            ty_span = ty_tok.span;
+        }
+
+        _ = try p.expect(.equals, "expected `=`", "a `let` binding needs an initial value") orelse return null;
+
+        const init_expr = try p.parseExpr() orelse return null;
+
+        return .{ .let = .{
+            .name = name_tok.value,
+            .name_span = name_tok.span,
+            .ty_name = ty_name,
+            .ty_span = ty_span,
+            .init = init_expr,
+            .span = Span.merge(kw.span, init_expr.spanOf()),
+        } };
+    }
+
+    fn precedenceOf(kind: Kind) ?struct { op: ast.BinOp, level: u8 } {
+        return switch (kind) {
+            .plus => .{ .op = .add, .level = 1 },
+            .minus => .{ .op = .sub, .level = 1 },
+            .star => .{ .op = .mul, .level = 2 },
+            .slash => .{ .op = .div, .level = 2 },
+            .percent => .{ .op = .rem, .level = 2 },
+            else => null,
+        };
+    }
+
     fn parseExpr(p: *Parser) Error!?ast.Expr {
+        return p.parseBinary(1);
+    }
+
+    fn parseBinary(p: *Parser, min_level: u8) Error!?ast.Expr {
+        var lhs = try p.parseUnary() orelse return null;
+
+        while (precedenceOf(p.peek())) |info| {
+            if (info.level < min_level) break;
+            const op_tok = p.advance();
+            const rhs = try p.parseBinary(info.level + 1) orelse return null;
+
+            const lhs_ptr = try p.arena.create(ast.Expr);
+            lhs_ptr.* = lhs;
+            const rhs_ptr = try p.arena.create(ast.Expr);
+            rhs_ptr.* = rhs;
+
+            lhs = .{ .binary = .{
+                .op = info.op,
+                .lhs = lhs_ptr,
+                .rhs = rhs_ptr,
+                .op_span = op_tok.span,
+                .span = Span.merge(lhs.spanOf(), rhs.spanOf()),
+            } };
+        }
+
+        return lhs;
+    }
+
+    fn parseUnary(p: *Parser) Error!?ast.Expr {
+        if (p.peek() != .minus) return p.parsePrimary();
+
+        const op_tok = p.advance();
+        const operand = try p.parseUnary() orelse return null;
+
+        const ptr = try p.arena.create(ast.Expr);
+        ptr.* = operand;
+
+        return .{ .unary = .{
+            .op = .neg,
+            .operand = ptr,
+            .op_span = op_tok.span,
+            .span = Span.merge(op_tok.span, operand.spanOf()),
+        } };
+    }
+
+    fn parsePrimary(p: *Parser) Error!?ast.Expr {
         switch (p.peek()) {
             .string => {
                 const t = p.advance();
                 return .{ .string = .{ .value = t.value, .span = t.span } };
             },
-            .ident => return try p.parseCall(),
+            .int => {
+                const t = p.advance();
+                return .{ .int = .{ .text = t.value, .span = t.span } };
+            },
+            .l_paren => {
+                _ = p.advance();
+                const inner = try p.parseExpr() orelse return null;
+                _ = try p.expect(.r_paren, "expected `)`", "add `)` to close the group") orelse return null;
+                return inner;
+            },
+            .ident => {
+                if (p.tokens[p.pos + 1].kind == .l_paren) return try p.parseCall();
+                const t = p.advance();
+                return .{ .var_ref = .{ .name = t.value, .span = t.span } };
+            },
             else => {
                 try p.diags.err(
                     .unexpected_token,
                     p.current().span,
                     "expected an expression",
-                    "expected a string literal or a function call",
+                    "expected a value, a variable, or a function call",
                     null,
                 );
                 return null;

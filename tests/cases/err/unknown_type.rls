@@ -1,0 +1,4 @@
+fn main() {
+    let x: Number = 10
+    println(x)
+}

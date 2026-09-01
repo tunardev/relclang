@@ -1,0 +1,9 @@
+error[E0011]: `x` is already defined in this scope
+
+  --> duplicate_binding.rls:3:9
+   |
+ 3 |     let x = 2
+   |         ^ duplicate binding
+   |
+help: shadowing is not allowed yet, pick another name
+

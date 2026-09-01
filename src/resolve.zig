@@ -15,15 +15,21 @@ pub const Builtin = enum {
         };
     }
 
-    pub fn paramType(b: Builtin, index: usize) types.Type {
-        return switch (b) {
-            .println => if (index == 0) .str else .invalid,
-        };
-    }
-
     pub fn resultType(b: Builtin) types.Type {
         return switch (b) {
             .println => .void,
+        };
+    }
+
+    pub fn accepts(b: Builtin, index: usize, ty: types.Type) bool {
+        return switch (b) {
+            .println => index == 0 and (ty == .str or ty == .int),
+        };
+    }
+
+    pub fn describeParam(b: Builtin, index: usize) []const u8 {
+        return switch (b) {
+            .println => if (index == 0) "`Str` or `Int`" else "nothing",
         };
     }
 };
@@ -84,29 +90,7 @@ pub fn run(
         );
     }
 
-    for (program.fns) |f| {
-        for (f.body.stmts) |stmt| try checkExpr(stmt.expr, &table, diags);
-    }
-
     return table;
-}
-
-fn checkExpr(expr: ast.Expr, table: *const SymbolTable, diags: *diagnostics.Diagnostics) !void {
-    switch (expr) {
-        .string => {},
-        .call => |c| {
-            if (table.lookup(c.callee) == null) {
-                try diags.err(
-                    .unknown_function,
-                    c.callee_span,
-                    "unknown function",
-                    "not defined anywhere",
-                    null,
-                );
-            }
-            for (c.args) |arg| try checkExpr(arg, table, diags);
-        },
-    }
 }
 
 const testing = std.testing;
@@ -168,22 +152,12 @@ test "shadowing a builtin reports E0006" {
     try testing.expect(hasCode(f.diags, .duplicate_function));
 }
 
-test "unknown function reports E0004" {
-    var f = try resolveText(testing.allocator, "fn main() {\n    nope(\"hi\")\n}\n");
-    defer f.deinit();
-    try testing.expect(hasCode(f.diags, .unknown_function));
-}
-
-test "unknown function inside an argument is reported" {
-    var f = try resolveText(testing.allocator, "fn main() {\n    println(nope(\"hi\"))\n}\n");
-    defer f.deinit();
-    try testing.expect(hasCode(f.diags, .unknown_function));
-}
-
-test "calling a user function resolves" {
+test "registers every declared function" {
     var f = try resolveText(testing.allocator, "fn helper() {\n}\nfn main() {\n    helper()\n}\n");
     defer f.deinit();
     try testing.expect(!f.diags.hasErrors());
+    try testing.expectEqual(@as(usize, 0), f.symbols.lookup("helper").?.function);
+    try testing.expectEqual(@as(usize, 1), f.symbols.lookup("main").?.function);
 }
 
 test "a function may be called before it is defined" {

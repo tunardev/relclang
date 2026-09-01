@@ -1,0 +1,9 @@
+error[E0013]: `+` cannot be applied to `Str` and `Str`
+
+  --> string_concat.rls:2:17
+   |
+ 2 |     println("a" + "b")
+   |                 ^ invalid operands
+   |
+help: string concatenation is not supported yet
+

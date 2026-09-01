@@ -14,6 +14,11 @@ pub const Code = enum {
     wrong_arg_count,
     type_mismatch,
     unexpected_char,
+    invalid_number,
+    duplicate_binding,
+    unknown_variable,
+    invalid_operand,
+    integer_overflow,
 
     pub fn id(c: Code) []const u8 {
         return switch (c) {
@@ -26,6 +31,11 @@ pub const Code = enum {
             .wrong_arg_count => "E0007",
             .type_mismatch => "E0008",
             .unexpected_char => "E0009",
+            .invalid_number => "E0010",
+            .duplicate_binding => "E0011",
+            .unknown_variable => "E0012",
+            .invalid_operand => "E0013",
+            .integer_overflow => "E0014",
         };
     }
 };
@@ -356,6 +366,8 @@ test "every code has a distinct id" {
         .unexpected_token, .unterminated_string, .unknown_escape,
         .unknown_function, .missing_main,        .duplicate_function,
         .wrong_arg_count,  .type_mismatch,       .unexpected_char,
+        .invalid_number,   .duplicate_binding,   .unknown_variable,
+        .invalid_operand,  .integer_overflow,
     };
     for (codes, 0..) |a, i| {
         for (codes[i + 1 ..]) |b| {

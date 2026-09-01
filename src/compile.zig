@@ -4,7 +4,6 @@ const diagnostics = @import("diagnostics.zig");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const resolve = @import("resolve.zig");
-const typecheck = @import("typecheck.zig");
 const lower = @import("lower.zig");
 const backend = @import("backend/zig.zig");
 const runtime = @import("backend/runtime.zig");
@@ -31,10 +30,8 @@ pub fn toZig(
     defer symbols.deinit();
     if (diags.hasErrors()) return null;
 
-    try typecheck.run(program, &symbols, diags);
+    const typed = try lower.run(arena, gpa, program, &symbols, diags);
     if (diags.hasErrors()) return null;
-
-    const typed = try lower.run(arena, program, &symbols);
 
     return .{
         .zig_source = try backend.emit(arena, typed),

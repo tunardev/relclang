@@ -1,0 +1,8 @@
+error[E0008]: type does not match the annotation
+
+  --> annotation_mismatch.rls:2:18
+   |
+ 2 |     let x: Str = 10
+   |                  ^^ expected `Str`, found `Int`
+   |
+
