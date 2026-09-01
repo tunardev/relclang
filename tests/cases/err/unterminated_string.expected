@@ -1,0 +1,9 @@
+error[E0002]: unterminated string literal
+
+  --> unterminated_string.rls:2:13
+   |
+ 2 |     println("oops)
+   |             ^^^^^^ string starts here
+   |
+help: add a closing `"`
+

@@ -77,7 +77,7 @@ pub fn run(
     if (table.entry == null) {
         try diags.err(
             .missing_main,
-            source.Span.zero,
+            null,
             "no `main` function found",
             null,
             "every Relastic program needs `fn main() { ... }`",

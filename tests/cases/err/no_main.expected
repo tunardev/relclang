@@ -1,0 +1,6 @@
+error[E0005]: no `main` function found
+
+  --> no_main.rls
+
+help: every Relastic program needs `fn main() { ... }`
+

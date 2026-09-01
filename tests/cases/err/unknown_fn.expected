@@ -1,0 +1,8 @@
+error[E0004]: unknown function
+
+  --> unknown_fn.rls:2:5
+   |
+ 2 |     greet("hi")
+   |     ^^^^^ not defined anywhere
+   |
+

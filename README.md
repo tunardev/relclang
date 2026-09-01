@@ -34,3 +34,4 @@ Other commands:
 ## Test
 
     zig build test
+    zig build cases

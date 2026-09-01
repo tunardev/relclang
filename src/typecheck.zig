@@ -41,11 +41,19 @@ fn typeOfCall(
         .builtin => |b| {
             const want = b.arity();
             if (c.args.len != want) {
+                const label = try diags.fmt(
+                    "expected {d}, found {d}",
+                    .{ want, c.args.len },
+                );
                 try diags.err(
                     .wrong_arg_count,
                     c.span,
-                    "wrong number of arguments",
-                    if (c.args.len > want) "too many arguments" else "too few arguments",
+                    try diags.fmt("`{s}` takes {d} {s}", .{
+                        c.callee,
+                        want,
+                        if (want == 1) "argument" else "arguments",
+                    }),
+                    label,
                     null,
                 );
                 for (c.args) |arg| _ = try typeOf(arg, symbols, diags);
@@ -56,11 +64,15 @@ fn typeOfCall(
                 const got = try typeOf(arg, symbols, diags);
                 const expected = b.paramType(i);
                 if (got != expected and got != .invalid) {
+                    const label = try diags.fmt(
+                        "expected `{s}`, found `{s}`",
+                        .{ expected.name(), got.name() },
+                    );
                     try diags.err(
                         .type_mismatch,
                         arg.spanOf(),
                         "argument type mismatch",
-                        expected.name(),
+                        label,
                         null,
                     );
                 }
@@ -72,7 +84,7 @@ fn typeOfCall(
                 try diags.err(
                     .wrong_arg_count,
                     c.span,
-                    "wrong number of arguments",
+                    try diags.fmt("`{s}` takes no arguments", .{c.callee}),
                     "functions take no parameters yet",
                     null,
                 );

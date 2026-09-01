@@ -48,22 +48,28 @@ pub const Diagnostic = struct {
     severity: Severity,
     code: ?Code,
     message: []const u8,
-    span: Span,
+    span: ?Span,
     label: ?[]const u8,
     help: ?[]const u8,
 };
 
 pub const Diagnostics = struct {
     gpa: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
     list: std.ArrayList(Diagnostic),
     errors: usize,
 
     pub fn init(gpa: std.mem.Allocator) Diagnostics {
-        return .{ .gpa = gpa, .list = .empty, .errors = 0 };
+        return .{ .gpa = gpa, .arena = .init(gpa), .list = .empty, .errors = 0 };
     }
 
     pub fn deinit(d: *Diagnostics) void {
         d.list.deinit(d.gpa);
+        d.arena.deinit();
+    }
+
+    pub fn fmt(d: *Diagnostics, comptime template: []const u8, args: anytype) ![]const u8 {
+        return std.fmt.allocPrint(d.arena.allocator(), template, args);
     }
 
     pub fn add(d: *Diagnostics, item: Diagnostic) !void {
@@ -74,7 +80,7 @@ pub const Diagnostics = struct {
     pub fn err(
         d: *Diagnostics,
         code: Code,
-        span: Span,
+        span: ?Span,
         message: []const u8,
         label: ?[]const u8,
         help: ?[]const u8,
@@ -106,7 +112,8 @@ fn digits(n: u32) usize {
 }
 
 fn renderOne(item: Diagnostic, file: SourceFile, w: *std.Io.Writer) !void {
-    const loc = file.locOf(item.span.start);
+    const span = item.span orelse return renderFileLevel(item, file, w);
+    const loc = file.locOf(span.start);
     const line_text = file.lineText(loc.line);
     const gutter = digits(loc.line) + 1;
 
@@ -129,7 +136,7 @@ fn renderOne(item: Diagnostic, file: SourceFile, w: *std.Io.Writer) !void {
     try w.splatByteAll(' ', loc.col - 1);
 
     const remaining = line_text.len + 1 -| (loc.col - 1);
-    const width = @max(@as(usize, 1), @min(item.span.len(), remaining));
+    const width = @max(@as(usize, 1), @min(span.len(), remaining));
     try w.splatByteAll('^', width);
 
     if (item.label) |l| try w.print(" {s}", .{l});
@@ -139,6 +146,15 @@ fn renderOne(item: Diagnostic, file: SourceFile, w: *std.Io.Writer) !void {
     try w.writeAll("|\n");
 
     if (item.help) |h| try w.print("help: {s}\n", .{h});
+    try w.writeByte('\n');
+}
+
+fn renderFileLevel(item: Diagnostic, file: SourceFile, w: *std.Io.Writer) !void {
+    try w.writeAll(item.severity.text());
+    if (item.code) |c| try w.print("[{s}]", .{c.id()});
+    try w.print(": {s}\n\n", .{item.message});
+    try w.print("  --> {s}\n", .{file.path});
+    if (item.help) |h| try w.print("\nhelp: {s}\n", .{h});
     try w.writeByte('\n');
 }
 
@@ -283,6 +299,45 @@ test "renders every diagnostic in order" {
     const second = std.mem.indexOf(u8, out, "second problem").?;
     try testing.expect(first < second);
     try testing.expectEqual(@as(usize, 2), d.errors);
+}
+
+test "a diagnostic without a span renders no snippet" {
+    const gpa = testing.allocator;
+    const file: source.SourceFile = .{ .path = "a.rls", .text = "fn helper() {\n}\n" };
+
+    var d: Diagnostics = .init(gpa);
+    defer d.deinit();
+    try d.err(.missing_main, null, "no `main` function found", null, "add `fn main()`");
+
+    const out = try renderToString(gpa, &d, file);
+    defer gpa.free(out);
+
+    const expected =
+        \\error[E0005]: no `main` function found
+        \\
+        \\  --> a.rls
+        \\
+        \\help: add `fn main()`
+        \\
+        \\
+    ;
+    try testing.expectEqualStrings(expected, out);
+    try testing.expect(std.mem.indexOf(u8, out, "^") == null);
+}
+
+test "fmt allocates a label owned by the diagnostics arena" {
+    const gpa = testing.allocator;
+    const file: source.SourceFile = .{ .path = "a.rls", .text = "abc\n" };
+
+    var d: Diagnostics = .init(gpa);
+    defer d.deinit();
+
+    const label = try d.fmt("expected `{s}`, found `{s}`", .{ "Str", "Void" });
+    try d.err(.type_mismatch, .{ .start = 0, .end = 3 }, "argument type mismatch", label, null);
+
+    const out = try renderToString(gpa, &d, file);
+    defer gpa.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "expected `Str`, found `Void`") != null);
 }
 
 test "hasErrors tracks severity" {

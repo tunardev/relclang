@@ -1,0 +1,5 @@
+# escape handling belongs to the lexer, not the backend
+fn main() {
+    println("tab:\there")
+    println("quote:\"q\" slash:\\")
+}

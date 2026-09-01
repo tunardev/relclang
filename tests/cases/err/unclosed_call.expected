@@ -1,0 +1,9 @@
+error[E0001]: unexpected token
+
+  --> unclosed_call.rls:2:20
+   |
+ 2 |     println("Hello"
+   |                    ^ expected `)`
+   |
+help: add `)` to close the call
+
