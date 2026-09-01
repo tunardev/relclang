@@ -32,6 +32,9 @@ pub const Diagnostics = struct {
     }
 
     pub fn add(d: *Diagnostics, item: Diagnostic) !void {
+        for (d.list.items) |existing| {
+            if (sameDiagnostic(existing, item)) return;
+        }
         if (item.severity == .err) d.errors += 1;
         try d.list.append(d.gpa, item);
     }
@@ -52,6 +55,24 @@ pub const Diagnostics = struct {
             .label = label,
             .help = help,
         });
+    }
+
+    fn sameDiagnostic(a: Diagnostic, b: Diagnostic) bool {
+        if (a.severity != b.severity or a.code != b.code) return false;
+        if (!sameSpan(a.span, b.span)) return false;
+        return std.mem.eql(u8, a.message, b.message) and
+            sameText(a.label, b.label) and
+            sameText(a.help, b.help);
+    }
+
+    fn sameSpan(a: ?Span, b: ?Span) bool {
+        if (a == null or b == null) return a == null and b == null;
+        return a.?.start == b.?.start and a.?.end == b.?.end;
+    }
+
+    fn sameText(a: ?[]const u8, b: ?[]const u8) bool {
+        if (a == null or b == null) return a == null and b == null;
+        return std.mem.eql(u8, a.?, b.?);
     }
 
     pub fn hasErrors(d: *const Diagnostics) bool {

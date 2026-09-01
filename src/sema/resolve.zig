@@ -15,6 +15,7 @@ pub const Symbol = symbols_mod.Symbol;
 pub const FnInfo = symbols_mod.FnInfo;
 pub const Template = symbols_mod.Template;
 pub const TraitInfo = symbols_mod.TraitInfo;
+pub const TraitMethod = symbols_mod.TraitMethod;
 pub const ImplInfo = symbols_mod.ImplInfo;
 pub const TypeInstance = symbols_mod.TypeInstance;
 pub const SymbolTable = symbols_mod.SymbolTable;
@@ -69,9 +70,11 @@ pub fn run(
             }
             try table.trait_map.put(gpa, decl.name, @intCast(i));
 
-            const names = try arena.alloc([]const u8, decl.methods.len);
-            for (decl.methods, 0..) |m, j| names[j] = m.name;
-            try trait_list.append(arena, .{ .name = decl.name, .methods = names });
+            const methods = try arena.alloc(TraitMethod, decl.methods.len);
+            for (decl.methods, 0..) |m, j| {
+                methods[j] = .{ .name = m.name, .has_self = m.has_self, .params = &.{}, .ret = .void };
+            }
+            try trait_list.append(arena, .{ .name = decl.name, .methods = methods });
         }
         table.traits = try trait_list.toOwnedSlice(arena);
     }
@@ -100,7 +103,7 @@ pub fn run(
         });
     }
 
-    for (program.enums, 0..) |decl, index| {
+    for (program.enums) |decl| {
         if (decl.type_params.len > 0) continue;
         if (table.enum_map.get(decl.name) != null or table.struct_map.get(decl.name) != null) {
             try diags.err(
@@ -114,10 +117,11 @@ pub fn run(
         }
         try table.enum_map.put(gpa, decl.name, @intCast(table.enums.items.len));
         try table.enums.append(arena, .{ .name = decl.name, .variants = &.{} });
-        _ = index;
     }
 
-    for (program.structs, 0..) |decl, index| {
+    var struct_spans: std.ArrayList(source.Span) = .empty;
+
+    for (program.structs) |decl| {
         if (decl.type_params.len > 0) continue;
         if (table.struct_map.get(decl.name) != null) {
             try diags.err(
@@ -131,7 +135,7 @@ pub fn run(
         }
         try table.struct_map.put(gpa, decl.name, @intCast(table.structs.items.len));
         try table.structs.append(arena, .{ .name = decl.name, .fields = &.{} });
-        _ = index;
+        try struct_spans.append(arena, decl.name_span);
     }
 
     for (program.enums) |decl| {
@@ -247,12 +251,11 @@ pub fn run(
         @memset(seen, false);
         @memset(done, false);
 
-        for (table.structs.items, 0..) |_, i| {
-            if (i >= program.structs.len) break;
+        for (struct_spans.items, 0..) |span, i| {
             if (structDepth(table.structs.items, @intCast(i), seen, done)) {
                 try diags.err(
                     .recursive_struct,
-                    program.structs[i].name_span,
+                    span,
                     try diags.fmt("`{s}` contains itself", .{table.structs.items[i].name}),
                     "this struct would have infinite size",
                     "store it behind a reference once references exist",
@@ -264,6 +267,18 @@ pub fn run(
 
     inline for (@typeInfo(Builtin).@"enum".fields) |field| {
         try table.map.put(gpa, field.name, .{ .builtin = @field(Builtin, field.name) });
+    }
+
+    for (program.traits) |decl| {
+        const trait_index = table.trait_map.get(decl.name) orelse continue;
+        const trait = table.traits[trait_index];
+        if (trait.methods.len != decl.methods.len) continue;
+        for (decl.methods, trait.methods) |sig, *method| {
+            const params = try arena.alloc(types.Type, sig.params.len);
+            for (sig.params, 0..) |param, i| params[i] = try resolveType(arena, &table, param.ty, diags);
+            method.params = params;
+            method.ret = if (sig.ret_ty) |ty| try resolveType(arena, &table, ty, diags) else .void;
+        }
     }
 
     var combined: std.ArrayList(ast.Fn) = .empty;
@@ -297,10 +312,11 @@ pub fn run(
 
         for (decl.methods) |m| {
             var matched = false;
-            for (trait.methods, 0..) |name, i| {
-                if (!std.mem.eql(u8, name, m.name)) continue;
+            for (trait.methods, 0..) |method, i| {
+                if (!std.mem.eql(u8, method.name, m.name)) continue;
                 slots[i] = combined.items.len;
                 matched = true;
+                try checkImplSignature(arena, &table, trait.name, method, m, diags);
                 break;
             }
 
@@ -320,12 +336,12 @@ pub fn run(
             try impl_targets.append(arena, target);
         }
 
-        for (trait.methods, 0..) |name, i| {
+        for (trait.methods, 0..) |method, i| {
             if (slots[i] != std.math.maxInt(usize)) continue;
             try diags.err(
                 .missing_impl,
                 decl.span,
-                try diags.fmt("missing method `{s}`", .{name}),
+                try diags.fmt("missing method `{s}`", .{method.name}),
                 try diags.fmt("`{s}` requires it", .{trait.name}),
                 null,
             );
@@ -451,4 +467,53 @@ pub fn run(
     }
 
     return table;
+}
+
+fn checkImplSignature(
+    arena: std.mem.Allocator,
+    table: *SymbolTable,
+    trait_name: []const u8,
+    declared: TraitMethod,
+    m: ast.Fn,
+    diags: *diagnostics.Diagnostics,
+) !void {
+    const label: ?[]const u8 = blk: {
+        if (m.has_self != declared.has_self) {
+            break :blk if (declared.has_self) "the trait declares it with `self`" else "the trait declares it without `self`";
+        }
+        if (m.params.len != declared.params.len) {
+            break :blk try diags.fmt("takes {d} {s}, but the trait declares {d}", .{
+                m.params.len,
+                if (m.params.len == 1) "parameter" else "parameters",
+                declared.params.len,
+            });
+        }
+        for (m.params, declared.params) |param, want| {
+            const got = try resolveTypeIn(arena, table, param.ty, m.type_params, diags);
+            if (got.isInvalid() or want.isInvalid() or types.Type.eql(got, want)) continue;
+            break :blk try diags.fmt("`{s}` is `{s}`, but the trait declares `{s}`", .{
+                param.name,
+                try table.typeName(diags.arena.allocator(), got),
+                try table.typeName(diags.arena.allocator(), want),
+            });
+        }
+        const ret = if (m.ret_ty) |ty| try resolveTypeIn(arena, table, ty, m.type_params, diags) else types.Type.void;
+        if (!ret.isInvalid() and !declared.ret.isInvalid() and !types.Type.eql(ret, declared.ret)) {
+            break :blk try diags.fmt("returns `{s}`, but the trait declares `{s}`", .{
+                try table.typeName(diags.arena.allocator(), ret),
+                try table.typeName(diags.arena.allocator(), declared.ret),
+            });
+        }
+        break :blk null;
+    };
+
+    if (label) |text| {
+        try diags.err(
+            .bad_signature,
+            m.name_span,
+            try diags.fmt("`{s}` does not match its declaration in `{s}`", .{ m.name, trait_name }),
+            text,
+            "make the impl method match the trait exactly",
+        );
+    }
 }

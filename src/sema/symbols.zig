@@ -66,13 +66,20 @@ pub const Template = struct {
     enum_def: ?types.EnumDef,
 };
 
+pub const TraitMethod = struct {
+    name: []const u8,
+    has_self: bool,
+    params: []const types.Type,
+    ret: types.Type,
+};
+
 pub const TraitInfo = struct {
     name: []const u8,
-    methods: []const []const u8,
+    methods: []TraitMethod,
 
     pub fn hasMethod(t: TraitInfo, name: []const u8) bool {
         for (t.methods) |m| {
-            if (std.mem.eql(u8, m, name)) return true;
+            if (std.mem.eql(u8, m.name, name)) return true;
         }
         return false;
     }
@@ -205,8 +212,8 @@ pub const SymbolTable = struct {
         for (t.impls) |impl| {
             if (!types.Type.eql(impl.target, target)) continue;
             const trait = t.traits[impl.trait_index];
-            for (trait.methods, 0..) |name, i| {
-                if (!std.mem.eql(u8, name, method)) continue;
+            for (trait.methods, 0..) |m, i| {
+                if (!std.mem.eql(u8, m.name, method)) continue;
                 if (i >= impl.methods.len) continue;
                 return .{ .impl = impl, .fn_index = impl.methods[i] };
             }

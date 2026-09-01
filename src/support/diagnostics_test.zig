@@ -224,3 +224,16 @@ test "every code has a distinct id" {
         }
     }
 }
+
+test "an identical diagnostic is only kept once" {
+    var d: Diagnostics = .init(testing.allocator);
+    defer d.deinit();
+
+    const span: source.Span = .{ .start = 2, .end = 3 };
+    try d.err(.unknown_variable, span, "cannot find `y`", "not defined here", null);
+    try d.err(.unknown_variable, span, "cannot find `y`", "not defined here", null);
+    try d.err(.unknown_variable, .{ .start = 9, .end = 10 }, "cannot find `y`", "not defined here", null);
+
+    try testing.expectEqual(@as(usize, 2), d.list.items.len);
+    try testing.expectEqual(@as(usize, 2), d.errors);
+}

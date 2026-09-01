@@ -88,6 +88,21 @@ pub fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         },
 
         .unary => |u| {
+            if (u.op == .neg and u.operand.* == .int) {
+                const lit = u.operand.int;
+                const value = parseNegativeInt(lit.text) catch {
+                    try f.diags.err(
+                        .integer_overflow,
+                        u.span,
+                        "integer literal is out of range",
+                        "does not fit in `Int`",
+                        "`Int` holds values from -9223372036854775808 to 9223372036854775807",
+                    );
+                    return .{ .int_const = .{ .value = 0, .ty = .invalid, .span = u.span } };
+                };
+                return .{ .int_const = .{ .value = value, .ty = .int, .span = u.span } };
+            }
+
             const operand = try lowerExpr(f, u.operand.*);
             const ty = typecheck.unaryResult(u.op, operand.typeOf()) orelse blk: {
                 try f.diags.err(
@@ -372,13 +387,17 @@ pub fn lowerWithExpected(f: *Fn, expr: ast.Expr, expected: ?Type) Error!tir.Expr
 }
 
 pub fn parseInt(text: []const u8) !i64 {
-    var value: i64 = 0;
-    for (text) |ch| {
-        if (ch == '_') continue;
-        const digit: i64 = ch - '0';
-        value = try std.math.add(i64, try std.math.mul(i64, value, 10), digit);
-    }
-    return value;
+    const magnitude = try std.fmt.parseUnsigned(u64, text, 10);
+    if (magnitude > std.math.maxInt(i64)) return error.Overflow;
+    return @intCast(magnitude);
+}
+
+pub fn parseNegativeInt(text: []const u8) !i64 {
+    const magnitude = try std.fmt.parseUnsigned(u64, text, 10);
+    const limit: u64 = @as(u64, std.math.maxInt(i64)) + 1;
+    if (magnitude > limit) return error.Overflow;
+    if (magnitude == limit) return std.math.minInt(i64);
+    return -@as(i64, @intCast(magnitude));
 }
 
 pub fn binOpOf(op: ast.BinOp) tir.BinOp {

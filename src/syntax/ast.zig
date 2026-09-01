@@ -192,6 +192,7 @@ pub const Bound = struct {
 pub const MethodSig = struct {
     name: []const u8,
     name_span: Span,
+    has_self: bool,
     params: []const Param,
     ret_ty: ?TypeExpr,
     span: Span,

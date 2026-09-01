@@ -131,10 +131,12 @@ pub fn tokenize(
             continue;
         }
 
-        const span: Span = .{ .start = i, .end = i + 1 };
+        const width: u32 = std.unicode.utf8ByteSequenceLength(c) catch 1;
+        const end: u32 = @intCast(@min(text.len, i + width));
+        const span: Span = .{ .start = i, .end = end };
         try diags.err(.unexpected_char, span, "unexpected character", "not valid in Relastic source", null);
         try out.append(arena, .{ .kind = .invalid, .span = span });
-        i += 1;
+        i = end;
     }
 
     const end: u32 = @intCast(text.len);

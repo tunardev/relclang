@@ -295,6 +295,7 @@ pub fn parseTrait(p: *Parser) Error!?ast.TraitDecl {
         try methods.append(p.arena, .{
             .name = mname.value,
             .name_span = mname.span,
+            .has_self = list.has_self,
             .params = list.params,
             .ret_ty = ret_ty,
             .span = Span.merge(fn_kw.span, mname.span),

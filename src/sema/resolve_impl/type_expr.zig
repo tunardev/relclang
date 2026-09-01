@@ -70,7 +70,6 @@ pub fn resolveTypeIn(
                     args[i] = try resolveTypeIn(arena, table, arg, type_params, diags);
                 }
 
-                if (types.hasParam(.{ .array = .{ .elem = &args[0], .len = 0 } }) and false) return .invalid;
                 return table.instantiate(tpl_index, args) catch error.OutOfMemory;
             }
 
@@ -82,7 +81,7 @@ pub fn resolveTypeIn(
                 n.span,
                 try diags.fmt("unknown type `{s}`", .{n.name}),
                 "not a known type",
-                "the built in types are `Int`, `Bool`, `Str` and `Void`",
+                "the built in types are `Int`, `Bool`, `Str`, `String`, `Vec<T>`, `Allocator` and `Void`",
             );
             return .invalid;
         },

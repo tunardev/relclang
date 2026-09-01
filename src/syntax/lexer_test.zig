@@ -275,3 +275,21 @@ test "operators do not need surrounding spaces" {
     defer gpa.free(kinds);
     try testing.expectEqualSlices(token.Kind, &.{ .int, .plus, .int, .star, .int, .eof }, kinds);
 }
+
+test "a multi byte character is one unexpected character" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    var d: diagnostics.Diagnostics = .init(testing.allocator);
+    defer d.deinit();
+
+    const file: source.SourceFile = .{ .path = "t.rls", .text = "fn main() {\n    é\n}\n" };
+    const toks = try tokenize(arena_state.allocator(), file, &d);
+
+    try testing.expectEqual(@as(usize, 1), d.list.items.len);
+    try testing.expectEqual(@as(u32, 2), d.list.items[0].span.?.len());
+    var invalid: usize = 0;
+    for (toks) |t| {
+        if (t.kind == .invalid) invalid += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), invalid);
+}

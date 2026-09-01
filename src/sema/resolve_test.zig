@@ -127,3 +127,78 @@ test "self outside an impl reports E0017" {
     defer f.deinit();
     try testing.expect(hasCode(f.diags, .bad_signature));
 }
+
+test "a recursive struct is reported at its own name" {
+    var f = try resolveText(testing.allocator, "struct W<T> {\n    x: T\n}\nstruct Node {\n    next: Node\n}\nfn main() {\n}\n");
+    defer f.deinit();
+    try testing.expect(hasCode(f.diags, .recursive_struct));
+    for (f.diags.list.items) |item| {
+        if (item.code != .recursive_struct) continue;
+        try testing.expectEqual(@as(u32, 32), item.span.?.start);
+    }
+}
+
+const show_trait =
+    \\struct P {
+    \\    x: Int
+    \\}
+    \\trait Show {
+    \\    fn show(self) -> Str
+    \\    fn scale(self, by: Int) -> Int
+    \\}
+    \\
+;
+
+test "an impl method with the wrong return type reports E0017" {
+    var f = try resolveText(testing.allocator, show_trait ++
+        \\impl Show for P {
+        \\    fn show(self) -> Int {
+        \\        self.x
+        \\    }
+        \\    fn scale(self, by: Int) -> Int {
+        \\        self.x * by
+        \\    }
+        \\}
+        \\fn main() {
+        \\}
+        \\
+    );
+    defer f.deinit();
+    try testing.expect(hasCode(f.diags, .bad_signature));
+}
+
+test "an impl method with the wrong parameters reports E0017" {
+    var f = try resolveText(testing.allocator, show_trait ++
+        \\impl Show for P {
+        \\    fn show(self) -> Str {
+        \\        "p"
+        \\    }
+        \\    fn scale(self, by: Str) -> Int {
+        \\        self.x
+        \\    }
+        \\}
+        \\fn main() {
+        \\}
+        \\
+    );
+    defer f.deinit();
+    try testing.expect(hasCode(f.diags, .bad_signature));
+}
+
+test "an impl method matching the trait is accepted" {
+    var f = try resolveText(testing.allocator, show_trait ++
+        \\impl Show for P {
+        \\    fn show(self) -> Str {
+        \\        "p"
+        \\    }
+        \\    fn scale(self, by: Int) -> Int {
+        \\        self.x * by
+        \\    }
+        \\}
+        \\fn main() {
+        \\}
+        \\
+    );
+    defer f.deinit();
+    try testing.expect(!f.diags.hasErrors());
+}

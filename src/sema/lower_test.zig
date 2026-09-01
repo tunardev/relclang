@@ -952,3 +952,27 @@ test "a match through a reference binds owning payloads by reference" {
     try testing.expect(v.ty == .ref and v.ty.ref.target.* == .vec);
     try testing.expectEqual(types.Type.int, n.ty);
 }
+
+test "an error in a generic body is reported once across instantiations" {
+    var l = try lowerText(testing.allocator,
+        \\fn id<T>(x: T) -> T {
+        \\    y
+        \\}
+        \\fn main() {
+        \\    let a = id(1)
+        \\    let b = id("s")
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expectEqual(@as(usize, 1), l.diags.list.items.len);
+    try testing.expect(l.has(.unknown_variable));
+}
+
+test "the most negative integer literal is accepted" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let x = -9223372036854775808\n    println(x)\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+    const init_expr = l.program.functions[0].body.stmts[0].let.init;
+    try testing.expectEqual(@as(i64, std.math.minInt(i64)), init_expr.int_const.value);
+}
