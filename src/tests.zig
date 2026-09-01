@@ -9,4 +9,6 @@ test {
     _ = @import("types.zig");
     _ = @import("resolve.zig");
     _ = @import("typecheck.zig");
+    _ = @import("tir.zig");
+    _ = @import("lower.zig");
 }
