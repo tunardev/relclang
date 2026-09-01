@@ -897,3 +897,30 @@ test "reading through a shared reference is allowed" {
     defer l.deinit();
     try testing.expect(!l.diags.hasErrors());
 }
+
+test "the question mark works with a plain enum" {
+    var l = try lowerText(testing.allocator,
+        \\enum R {
+        \\    Ok(Int)
+        \\    Err(Str)
+        \\}
+        \\fn half(n: Int) -> R {
+        \\    if n % 2 == 0 { Ok(n / 2) } else { Err("odd") }
+        \\}
+        \\fn quarter(n: Int) -> R {
+        \\    let h = half(n)?
+        \\    half(h)
+        \\}
+        \\fn main() {
+        \\    match quarter(8) {
+        \\        Ok(v) => println(v)
+        \\        Err(e) => println(e)
+        \\    }
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+    const try_expr = l.program.functions[1].body.stmts[0].let.init.try_unwrap;
+    try testing.expectEqual(try_expr.source_enum, try_expr.ret_enum);
+}

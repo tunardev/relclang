@@ -636,8 +636,10 @@ pub fn lowerTry(f: *Fn, t: ast.Try) Error!tir.Expr {
 
     const src_tpl = templateOf(f, src.enumeration);
     const ret_tpl = templateOf(f, f.ret_ty.enumeration);
+    const same_enum = src.enumeration == f.ret_ty.enumeration;
+    const same_template = src_tpl != null and ret_tpl != null and src_tpl.? == ret_tpl.?;
 
-    if (src_tpl == null or ret_tpl == null or src_tpl.? != ret_tpl.?) {
+    if (!same_enum and !same_template) {
         try f.diags.err(
             .bad_pattern,
             t.span,
