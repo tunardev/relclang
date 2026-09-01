@@ -1,36 +1,48 @@
 # Relastic
 
-A systems programming language. Source files use the `.rls` extension.
+[![ci](https://github.com/tunardev/relclang/actions/workflows/ci.yml/badge.svg)](https://github.com/tunardev/relclang/actions/workflows/ci.yml)
 
-Relastic compiles to native code. The compiler is written in Zig and
-currently generates Zig, which is then compiled to a binary.
+A small systems language with ownership, borrow checking, generics and
+traits. It compiles to Zig, and Zig compiles that to a native binary.
 
-## Status
+The compiler catches this before your program ever runs:
 
-Very early. Right now it handles functions, `let` bindings, integers,
-strings, arithmetic, structs and fixed size arrays:
+```
+error[E0028]: use of moved value `x`
+
+   --> main.rls:12:21
+    |
+ 12 |     println(consume(x))
+    |                     ^ value used here after move
+    |
+help: `x` has type `Resource`, which is moved rather than copied
+```
+
+## Try it
+
+You need Zig 0.16.0.
+
+    git clone https://github.com/tunardev/relclang
+    cd relclang
+    zig build
+
+    ./zig-out/bin/relc run examples/fizzbuzz.rls
+
+Other commands:
+
+    relc build hello.rls     write a binary
+    relc run hello.rls       build and run
+    relc check hello.rls     report errors only
+    relc emit-zig hello.rls  print the generated Zig
+
+## The language
+
+Functions, structs, enums and pattern matching:
 
     struct Point {
         x: Int
         y: Int
     }
-
-    fn dist2(a: Point, b: Point) -> Int {
-        let dx = a.x - b.x
-        let dy = a.y - b.y
-        dx * dx + dy * dy
-    }
-
-    fn main() {
-        let a = Point { x: 10, y: 20 }
-        let b = Point { x: 15, y: 25 }
-        println(dist2(a, b))
-
-        let nums = [3, 1, 4]
-        println(nums[0])
-    }
-
-It also has enums with associated values and pattern matching:
 
     enum Shape {
         Circle(Int)
@@ -44,68 +56,61 @@ It also has enums with associated values and pattern matching:
         }
     }
 
-Values are owned. Structs and enums move when you pass them; integers,
-booleans, strings and references copy. Using a value after it moved is
-a compile error:
+Every `match` has to cover all variants, or end with a `_` arm.
 
-    let a = Point { x: 1, y: 2 }
-    let b = a
-    println(a.x)      # error: use of moved value `a`
+Values are owned. Structs and enums move when you pass them. Integers,
+booleans, strings and references copy. Borrow instead of moving with
+`&` and `&mut`:
 
-Borrow it instead with `&` or `&mut`:
+    fn distance(a: &Point, b: &Point) -> Int { ... }
+    fn shift(p: &mut Point) { p.x = p.x + 1 }
 
-    fn dist2(a: &Point, b: &Point) -> Int { ... }
-    fn bump(p: &mut Point) { p.x = p.x + 1 }
+A value can have many shared borrows, or one mutable borrow, never both.
 
-A value can have many shared borrows or one mutable borrow, never both.
-
-Functions, structs and enums can be generic, and traits describe what a
-type can do:
+Generics and traits, resolved at compile time:
 
     trait Show {
         fn show(self) -> Str
     }
 
-    impl Show for User {
+    impl Show for Point {
         fn show(self) -> Str {
-            self.name
+            "a point"
         }
     }
 
-    fn announce<T: Show>(x: T) -> Str {
-        x.show()
+    fn announce<T: Show>(value: &T) -> Str {
+        value.show()
     }
 
-Generic code is compiled separately for each type it is used with, so
-calls are direct. Type arguments are worked out from the arguments you
-pass; there is no way to write them at a call site yet.
+`?` unwraps the first variant of an enum and returns the second one from
+the enclosing function, which is how errors travel:
 
-`?` unwraps the first variant of an enum and returns the second one
-from the enclosing function, which is how errors travel:
+    enum Result<T, E> {
+        Ok(T)
+        Err(E)
+    }
 
     fn quarter(n: Int) -> Result<Int, Str> {
         let half = halve(n)?
         halve(half)
     }
 
-The last line of a function body is its return value, and `return` exits
-early. Arrays have a fixed length that is part of their type, written
-`[Int; 3]`. Slices do not exist yet. Every `match` must cover all
-variants, or end with a `_` arm.
+`Result` is not built in. You write it yourself, and `?` works with any
+enum shaped like it.
 
-There is one integer type, `Int`, which is 64 bits and signed. Division
-truncates toward zero and dividing by zero stops the program. Bindings
-are immutable and cannot be redeclared in the same scope.
+The last line of a function body is its return value. `return` exits
+early.
 
 ## What it compiles to
 
 Relastic is compiled, not interpreted. The compiler works out what your
-program means, then writes Zig, and Zig turns that into a binary.
+program means, then writes Zig.
 
 `examples/showcase.rls` uses every part of the language, and
 `examples/showcase.generated.zig` is exactly what the compiler produces
-for it. A test regenerates that file and fails if the two ever disagree,
-so it always shows real output.
+for it. A test regenerates that file and fails if the two disagree, so
+it always shows real output.
 
 This Relastic:
 
@@ -126,33 +131,43 @@ becomes this Zig:
         return E0_Result_Int_Str{ .v0_Ok = .{ .f0 = (v1_m * @as(i64, 2)) } };
     }
 
-Generic types are compiled into real ones, so `Result<Int, Str>` becomes
-a plain tagged union. Traits become direct calls. Borrows become
-pointers, because the compiler has already proved they are safe.
+Generic types become real ones, so `Result<Int, Str>` is a plain tagged
+union. Traits become direct calls, with no lookup at run time. Borrows
+become pointers, because the compiler already proved they are safe.
 
-To see it for any file of your own:
+Run `relc emit-zig` on any file to see this for yourself.
 
-    relc emit-zig myfile.rls
+## Status
 
-## Build
+This is an experiment, and it is honest about its size.
 
-You need Zig 0.16.0.
+Working: functions, generics, traits, structs, enums, pattern matching,
+fixed size arrays, ownership, borrow checking, `if`, `while`, and clear
+error messages.
+
+Missing: there is no way to allocate memory yet. That means no growable
+lists, no joining strings, no reading input, and no linked structures.
+Every program is limited to fixed size data and printing. There are also
+no modules, so a program is a single file, and no standard library, so
+`println` is the only thing the compiler gives you.
+
+The ownership rules are the groundwork for allocation, so this is the
+next real step rather than a rewrite.
+
+## Design
+
+Relastic has its own meaning, and Zig is a target it happens to use
+today. The compiler decides what your program means first, and only then
+writes Zig. The code generator can only see the typed representation,
+never the syntax tree, and a test enforces that. Another backend could
+replace it without touching the language.
+
+## Build and test
 
     zig build
-
-## Use
-
-    relc build hello.rls
-    ./hello
-
-Other commands:
-
-    relc run hello.rls       build and run
-    relc check hello.rls     report errors only
-    relc emit-zig hello.rls  print the generated Zig
-    relc version
-
-## Test
-
     zig build test
     zig build cases
+
+## License
+
+MIT
