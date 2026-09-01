@@ -746,3 +746,15 @@ test "a wrongly typed return reports E0016" {
     defer l.deinit();
     try testing.expect(l.has(.missing_return));
 }
+
+test "assigning to an unknown variable reports E0012" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    y = 1\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.unknown_variable));
+}
+
+test "mutably borrowing an unknown variable reports E0012" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let r = &mut y\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.unknown_variable));
+}

@@ -121,3 +121,9 @@ test "an unknown type in a signature reports E0018" {
     defer f.deinit();
     try testing.expect(hasCode(f.diags, .unknown_struct));
 }
+
+test "self outside an impl reports E0017" {
+    var f = try resolveText(testing.allocator, "fn foo(self) {\n}\nfn main() {\n}\n");
+    defer f.deinit();
+    try testing.expect(hasCode(f.diags, .bad_signature));
+}

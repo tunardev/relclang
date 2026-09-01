@@ -21,7 +21,7 @@ const resolveLocalType = expr_mod.resolveLocalType;
 
 pub fn rootPlace(f: *Fn, expr: tir.Expr) ?Place {
     return switch (expr) {
-        .local_ref => |l| .{
+        .local_ref => |l| if (l.ty.isInvalid()) null else .{
             .slot = l.slot,
             .is_mut = f.locals.items[l.slot].is_mut,
             .name = f.locals.items[l.slot].name,

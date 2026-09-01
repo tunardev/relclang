@@ -68,7 +68,7 @@ pub const Fn = struct {
 
     pub fn rootSlotOf(f: *Fn, value: tir.Expr) ?u32 {
         return switch (value) {
-            .local_ref => |l| l.slot,
+            .local_ref => |l| if (l.ty.isInvalid()) null else l.slot,
             .field => |x| f.rootSlotOf(x.base.*),
             .index => |x| f.rootSlotOf(x.base.*),
             .deref => |d| f.rootSlotOf(d.operand.*),

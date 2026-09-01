@@ -348,11 +348,18 @@ pub fn run(
         var params: std.ArrayList(types.Type) = .empty;
 
         if (f.has_self) {
-            const self_index = fi - program.fns.len;
-            const target = if (self_index < impl_targets.items.len)
-                impl_targets.items[self_index]
-            else
-                types.Type.invalid;
+            const target: types.Type = if (fi >= program.fns.len)
+                impl_targets.items[fi - program.fns.len]
+            else blk: {
+                try diags.err(
+                    .bad_signature,
+                    f.name_span,
+                    "`self` is only allowed in an `impl` method",
+                    "this function is not inside an `impl`",
+                    "write `impl Trait for Type { fn ... }` to use `self`",
+                );
+                break :blk .invalid;
+            };
             const ptr = try arena.create(types.Type);
             ptr.* = target;
             try params.append(arena, .{ .ref = .{ .mutable = false, .target = ptr } });

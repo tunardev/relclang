@@ -204,7 +204,7 @@ pub fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
                             try f.diags.fmt("declare it with `let mut {s} = ...`", .{place.name}),
                         );
                     }
-                } else {
+                } else if (!operand.typeOf().isInvalid()) {
                     try f.diags.err(
                         .not_assignable,
                         b.span,
