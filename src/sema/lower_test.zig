@@ -962,3 +962,21 @@ test "the most negative integer literal is accepted" {
     const init_expr = l.program.functions[0].body.stmts[0].let.init;
     try testing.expectEqual(@as(i64, std.math.minInt(i64)), init_expr.int_const.value);
 }
+
+test "instantiating a generic while lowering main keeps main" {
+    var l = try lowerText(testing.allocator,
+        \\fn id<T>(x: T) -> T {
+        \\    x
+        \\}
+        \\fn main() {
+        \\    println(id(1))
+        \\    println(id("s"))
+        \\    println(id(true))
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+    try testing.expectEqualStrings("main", l.program.functions[0].name);
+    try testing.expect(l.program.functions[0].is_entry);
+}

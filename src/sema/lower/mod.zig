@@ -49,12 +49,14 @@ pub fn run(
 
     for (symbols.all_fns, 0..) |_, index| {
         if (ast_to_tir[index]) |tir_index| {
-            mono.functions.items[tir_index] = try lowerFunction(&mono, index, &.{});
+            const lowered = try lowerFunction(&mono, index, &.{});
+            mono.functions.items[tir_index] = lowered;
         }
     }
 
     while (mono.pending.pop()) |job| {
-        mono.functions.items[job.tir_index] = try lowerFunction(&mono, job.ast_index, job.args);
+        const lowered = try lowerFunction(&mono, job.ast_index, job.args);
+        mono.functions.items[job.tir_index] = lowered;
     }
 
     return .{
