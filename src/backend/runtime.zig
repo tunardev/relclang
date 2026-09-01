@@ -14,7 +14,7 @@ pub const source =
     \\pub fn printLine(s: []const u8) Error!void {
     \\    const io = io_instance orelse return error.WriteFailed;
     \\    var buf: [4096]u8 = undefined;
-    \\    var fw = std.Io.File.stdout().writer(io, &buf);
+    \\    var fw = std.Io.File.stdout().writerStreaming(io, &buf);
     \\    const w = &fw.interface;
     \\    w.writeAll(s) catch return error.WriteFailed;
     \\    w.writeByte('\n') catch return error.WriteFailed;

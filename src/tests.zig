@@ -13,4 +13,5 @@ test {
     _ = @import("lower.zig");
     _ = @import("backend/runtime.zig");
     _ = @import("backend/zig.zig");
+    _ = @import("compile.zig");
 }
