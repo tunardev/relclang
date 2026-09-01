@@ -6,15 +6,46 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  ZIG_VERSION: 0.16.0
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+          - os: macos-latest
+            target: aarch64-macos
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v1
+      - name: Cache Zig
+        id: cache-zig
+        uses: actions/cache@v4
         with:
-          version: 0.16.0
+          path: zig-toolchain
+          key: zig-${{ env.ZIG_VERSION }}-${{ matrix.target }}
+
+      - name: Download Zig
+        if: steps.cache-zig.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          name="zig-${{ matrix.target }}-${{ env.ZIG_VERSION }}"
+          curl -fsSL --retry 5 --retry-all-errors \
+            "https://ziglang.org/download/${{ env.ZIG_VERSION }}/${name}.tar.xz" -o zig.tar.xz
+          mkdir -p zig-toolchain
+          tar -xJf zig.tar.xz -C zig-toolchain --strip-components=1
+
+      - name: Add Zig to PATH
+        run: echo "$GITHUB_WORKSPACE/zig-toolchain" >> "$GITHUB_PATH"
+
+      - name: Version
+        run: zig version
 
       - name: Build
         run: zig build
@@ -27,6 +58,7 @@ jobs:
 
       - name: Examples
         run: |
+          set -eu
           for f in examples/*.rls; do
             echo "--- $f"
             ./zig-out/bin/relc run "$f"
