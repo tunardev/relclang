@@ -1,0 +1,15 @@
+enum Color {
+    Red
+    Green
+}
+
+fn pick(c: Color) -> Int {
+    match c {
+        Red => 1
+        Red => 2
+        Green => 3
+    }
+}
+
+fn main() {
+}

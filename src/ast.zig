@@ -78,6 +78,7 @@ pub const Expr = union(enum) {
     field: FieldAccess,
     array_lit: ArrayLit,
     index: Index,
+    match: Match,
 
     pub fn spanOf(e: Expr) Span {
         return switch (e) {
@@ -91,6 +92,7 @@ pub const Expr = union(enum) {
             .field => |f| f.span,
             .array_lit => |a| a.span,
             .index => |x| x.span,
+            .match => |m| m.span,
         };
     }
 };
@@ -145,6 +147,54 @@ pub const StructDecl = struct {
     span: Span,
 };
 
+pub const VariantDecl = struct {
+    name: []const u8,
+    name_span: Span,
+    payload: []const TypeExpr,
+};
+
+pub const EnumDecl = struct {
+    name: []const u8,
+    name_span: Span,
+    variants: []const VariantDecl,
+    span: Span,
+};
+
+pub const Binding = struct {
+    name: []const u8,
+    span: Span,
+};
+
+pub const Pattern = union(enum) {
+    wildcard: Span,
+    variant: struct {
+        name: []const u8,
+        name_span: Span,
+        bindings: []const Binding,
+        has_parens: bool,
+        span: Span,
+    },
+
+    pub fn spanOf(p: Pattern) Span {
+        return switch (p) {
+            .wildcard => |s| s,
+            .variant => |v| v.span,
+        };
+    }
+};
+
+pub const Arm = struct {
+    pattern: Pattern,
+    body: Expr,
+    span: Span,
+};
+
+pub const Match = struct {
+    scrutinee: *const Expr,
+    arms: []const Arm,
+    span: Span,
+};
+
 pub const FieldInit = struct {
     name: []const u8,
     name_span: Span,
@@ -194,4 +244,5 @@ pub const Fn = struct {
 pub const Program = struct {
     fns: []const Fn,
     structs: []const StructDecl,
+    enums: []const EnumDecl,
 };

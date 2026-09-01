@@ -1,0 +1,43 @@
+enum Shape {
+    Circle(Int)
+    Rect(Int, Int)
+    Empty
+}
+
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => r * r * 3
+        Rect(w, h) => w * h
+        Empty => 0
+    }
+}
+
+fn name(c: Color) -> Str {
+    match c {
+        Red => "red"
+        _ => "other"
+    }
+}
+
+fn describe(s: Shape) {
+    match s {
+        Circle(r) => println("circle")
+        Rect(w, h) => println("rect")
+        Empty => println("empty")
+    }
+}
+
+fn main() {
+    println(area(Circle(5)))
+    println(area(Rect(2, 7)))
+    println(area(Empty))
+    println(name(Red))
+    println(name(Blue))
+    describe(Rect(1, 1))
+}

@@ -1,0 +1,14 @@
+enum Shape {
+    Circle(Int)
+    Rect(Int, Int)
+    Empty
+}
+
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => r * r
+    }
+}
+
+fn main() {
+}

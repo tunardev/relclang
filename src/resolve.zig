@@ -35,9 +35,15 @@ pub const Builtin = enum {
     }
 };
 
+pub const VariantRef = struct {
+    enumeration: u32,
+    variant: u32,
+};
+
 pub const Symbol = union(enum) {
     builtin: Builtin,
     function: usize,
+    variant: VariantRef,
 };
 
 pub const FnInfo = struct {
@@ -53,6 +59,8 @@ pub const SymbolTable = struct {
     fns: []const FnInfo,
     structs: []const types.StructDef,
     struct_map: std.StringHashMapUnmanaged(u32),
+    enums: []const types.EnumDef,
+    enum_map: std.StringHashMapUnmanaged(u32),
 
     pub fn lookup(t: *const SymbolTable, name: []const u8) ?Symbol {
         return t.map.get(name);
@@ -66,13 +74,22 @@ pub const SymbolTable = struct {
         return t.struct_map.get(name);
     }
 
+    pub fn enumIndex(t: *const SymbolTable, name: []const u8) ?u32 {
+        return t.enum_map.get(name);
+    }
+
+    pub fn registry(t: *const SymbolTable) types.Registry {
+        return .{ .structs = t.structs, .enums = t.enums };
+    }
+
     pub fn typeName(t: *const SymbolTable, arena: std.mem.Allocator, ty: types.Type) ![]const u8 {
-        return types.nameOf(arena, t.structs, ty);
+        return types.nameOf(arena, t.registry(), ty);
     }
 
     pub fn deinit(t: *SymbolTable) void {
         t.map.deinit(t.gpa);
         t.struct_map.deinit(t.gpa);
+        t.enum_map.deinit(t.gpa);
     }
 };
 
@@ -88,6 +105,7 @@ fn resolveType(
         .named => |n| {
             if (typecheck.typeFromName(n.name)) |primitive| return primitive;
             if (table.structIndex(n.name)) |index| return .{ .strukt = index };
+            if (table.enumIndex(n.name)) |index| return .{ .enumeration = index };
 
             try diags.err(
                 .unknown_struct,
@@ -153,8 +171,24 @@ pub fn run(
         .fns = &.{},
         .structs = &.{},
         .struct_map = .empty,
+        .enums = &.{},
+        .enum_map = .empty,
     };
     errdefer table.deinit();
+
+    for (program.enums, 0..) |decl, index| {
+        if (table.enum_map.get(decl.name) != null or table.struct_map.get(decl.name) != null) {
+            try diags.err(
+                .duplicate_function,
+                decl.name_span,
+                try diags.fmt("`{s}` is already defined", .{decl.name}),
+                "duplicate type",
+                null,
+            );
+            continue;
+        }
+        try table.enum_map.put(gpa, decl.name, @intCast(index));
+    }
 
     for (program.structs, 0..) |decl, index| {
         if (table.struct_map.get(decl.name) != null) {
@@ -168,6 +202,42 @@ pub fn run(
             continue;
         }
         try table.struct_map.put(gpa, decl.name, @intCast(index));
+    }
+
+    var enum_defs: std.ArrayList(types.EnumDef) = .empty;
+    for (program.enums) |decl| {
+        var variants: std.ArrayList(types.VariantDef) = .empty;
+        for (decl.variants) |variant| {
+            var payload: std.ArrayList(types.Type) = .empty;
+            for (variant.payload) |ty_expr| {
+                try payload.append(arena, try resolveType(arena, &table, ty_expr, diags));
+            }
+            try variants.append(arena, .{
+                .name = variant.name,
+                .payload = try payload.toOwnedSlice(arena),
+            });
+        }
+        try enum_defs.append(arena, .{ .name = decl.name, .variants = try variants.toOwnedSlice(arena) });
+    }
+    table.enums = try enum_defs.toOwnedSlice(arena);
+
+    for (program.enums, 0..) |decl, ei| {
+        for (decl.variants, 0..) |variant, vi| {
+            if (table.map.get(variant.name) != null) {
+                try diags.err(
+                    .duplicate_function,
+                    variant.name_span,
+                    try diags.fmt("`{s}` is already defined", .{variant.name}),
+                    "variant names share one namespace with functions",
+                    null,
+                );
+                continue;
+            }
+            try table.map.put(gpa, variant.name, .{ .variant = .{
+                .enumeration = @intCast(ei),
+                .variant = @intCast(vi),
+            } });
+        }
     }
 
     var defs: std.ArrayList(types.StructDef) = .empty;
@@ -247,6 +317,7 @@ pub fn run(
             const message = switch (existing) {
                 .builtin => "a builtin with this name already exists",
                 .function => "this function is already defined",
+                .variant => "an enum variant already has this name",
             };
             try diags.err(.duplicate_function, f.name_span, message, "duplicate definition", null);
             continue;

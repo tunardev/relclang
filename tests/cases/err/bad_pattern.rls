@@ -1,0 +1,12 @@
+enum Pair {
+    Both(Int, Int)
+}
+
+fn first(p: Pair) -> Int {
+    match p {
+        Both(a) => a
+    }
+}
+
+fn main() {
+}

@@ -30,9 +30,24 @@ strings, arithmetic, structs and fixed size arrays:
         println(nums[0])
     }
 
+It also has enums with associated values and pattern matching:
+
+    enum Shape {
+        Circle(Int)
+        Rect(Int, Int)
+    }
+
+    fn area(s: Shape) -> Int {
+        match s {
+            Circle(r) => r * r * 3
+            Rect(w, h) => w * h
+        }
+    }
+
 The last line of a function body is its return value. There is no
 `return` keyword yet. Arrays have a fixed length that is part of their
-type, written `[Int; 3]`. Slices do not exist yet.
+type, written `[Int; 3]`. Slices do not exist yet. Every `match` must
+cover all variants, or end with a `_` arm.
 
 There is one integer type, `Int`, which is 64 bits and signed. Division
 truncates toward zero and dividing by zero stops the program. Bindings

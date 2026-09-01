@@ -74,6 +74,12 @@ pub fn tokenize(
             continue;
         }
 
+        if (c == '=' and i + 1 < text.len and text[i + 1] == '>') {
+            try out.append(arena, .{ .kind = .fat_arrow, .span = .{ .start = i, .end = i + 2 } });
+            i += 2;
+            continue;
+        }
+
         if (c == '-' and i + 1 < text.len and text[i + 1] == '>') {
             try out.append(arena, .{ .kind = .arrow, .span = .{ .start = i, .end = i + 2 } });
             i += 2;
@@ -184,6 +190,8 @@ fn keywordOf(name: []const u8) ?Kind {
     if (std.mem.eql(u8, name, "fn")) return .kw_fn;
     if (std.mem.eql(u8, name, "let")) return .kw_let;
     if (std.mem.eql(u8, name, "struct")) return .kw_struct;
+    if (std.mem.eql(u8, name, "enum")) return .kw_enum;
+    if (std.mem.eql(u8, name, "match")) return .kw_match;
     return null;
 }
 

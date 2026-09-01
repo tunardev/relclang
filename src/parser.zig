@@ -44,6 +44,7 @@ const Parser = struct {
     fn parseProgram(p: *Parser) Error!ast.Program {
         var fns: std.ArrayList(ast.Fn) = .empty;
         var structs: std.ArrayList(ast.StructDecl) = .empty;
+        var enums: std.ArrayList(ast.EnumDecl) = .empty;
 
         while (true) {
             p.skipNewlines();
@@ -52,12 +53,13 @@ const Parser = struct {
             switch (p.peek()) {
                 .kw_fn => if (try p.parseFn()) |f| try fns.append(p.arena, f),
                 .kw_struct => if (try p.parseStruct()) |d| try structs.append(p.arena, d),
+                .kw_enum => if (try p.parseEnum()) |d| try enums.append(p.arena, d),
                 else => {
                     try p.diags.err(
                         .unexpected_token,
                         p.current().span,
                         "expected a top level definition",
-                        "only `fn` and `struct` are allowed here",
+                        "only `fn`, `struct` and `enum` are allowed here",
                         null,
                     );
                     p.recoverToTopLevel();
@@ -68,11 +70,12 @@ const Parser = struct {
         return .{
             .fns = try fns.toOwnedSlice(p.arena),
             .structs = try structs.toOwnedSlice(p.arena),
+            .enums = try enums.toOwnedSlice(p.arena),
         };
     }
 
     fn recoverToTopLevel(p: *Parser) void {
-        while (p.peek() != .eof and p.peek() != .kw_fn and p.peek() != .kw_struct) p.pos += 1;
+        while (p.peek() != .eof and p.peek() != .kw_fn and p.peek() != .kw_struct and p.peek() != .kw_enum) p.pos += 1;
     }
 
     fn parseStruct(p: *Parser) Error!?ast.StructDecl {
@@ -127,6 +130,161 @@ const Parser = struct {
             .fields = try fields.toOwnedSlice(p.arena),
             .span = Span.merge(kw.span, close.span),
         };
+    }
+
+    fn parseEnum(p: *Parser) Error!?ast.EnumDecl {
+        const kw = p.advance();
+
+        const name_tok = try p.expect(.ident, "expected an enum name", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        p.skipNewlines();
+        _ = try p.expect(.l_brace, "expected `{`", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        var variants: std.ArrayList(ast.VariantDecl) = .empty;
+
+        while (true) {
+            p.skipNewlines();
+            if (p.peek() == .r_brace or p.peek() == .eof) break;
+
+            const before = p.pos;
+
+            const vname = try p.expect(.ident, "expected a variant name", null) orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+
+            var payload: std.ArrayList(ast.TypeExpr) = .empty;
+            if (p.peek() == .l_paren) {
+                _ = p.advance();
+                if (p.peek() != .r_paren) {
+                    while (true) {
+                        const ty = try p.parseType() orelse break;
+                        try payload.append(p.arena, ty);
+                        if (p.peek() != .comma) break;
+                        _ = p.advance();
+                    }
+                }
+                _ = try p.expect(.r_paren, "expected `)`", null) orelse {
+                    p.recoverInBlock();
+                    if (p.pos == before) p.pos += 1;
+                    continue;
+                };
+            }
+
+            try variants.append(p.arena, .{
+                .name = vname.value,
+                .name_span = vname.span,
+                .payload = try payload.toOwnedSlice(p.arena),
+            });
+
+            if (p.peek() == .comma) _ = p.advance();
+            if (p.pos == before) p.pos += 1;
+        }
+
+        const close = try p.expect(.r_brace, "expected `}`", "the enum body is never closed") orelse p.current();
+
+        return .{
+            .name = name_tok.value,
+            .name_span = name_tok.span,
+            .variants = try variants.toOwnedSlice(p.arena),
+            .span = Span.merge(kw.span, close.span),
+        };
+    }
+
+    fn parsePattern(p: *Parser) Error!?ast.Pattern {
+        const name_tok = try p.expect(.ident, "expected a pattern", "a pattern is a variant name or `_`") orelse return null;
+
+        if (std.mem.eql(u8, name_tok.value, "_")) return .{ .wildcard = name_tok.span };
+
+        var bindings: std.ArrayList(ast.Binding) = .empty;
+        var has_parens = false;
+        var end = name_tok.span;
+
+        if (p.peek() == .l_paren) {
+            has_parens = true;
+            _ = p.advance();
+            if (p.peek() != .r_paren) {
+                while (true) {
+                    const b = try p.expect(.ident, "expected a binding name", null) orelse return null;
+                    try bindings.append(p.arena, .{ .name = b.value, .span = b.span });
+                    if (p.peek() != .comma) break;
+                    _ = p.advance();
+                }
+            }
+            const close = try p.expect(.r_paren, "expected `)`", null) orelse return null;
+            end = close.span;
+        }
+
+        return .{ .variant = .{
+            .name = name_tok.value,
+            .name_span = name_tok.span,
+            .bindings = try bindings.toOwnedSlice(p.arena),
+            .has_parens = has_parens,
+            .span = Span.merge(name_tok.span, end),
+        } };
+    }
+
+    fn parseMatch(p: *Parser) Error!?ast.Expr {
+        const kw = p.advance();
+
+        const scrutinee = try p.parseExpr() orelse return null;
+
+        p.skipNewlines();
+        _ = try p.expect(.l_brace, "expected `{`", "a match needs a block of arms") orelse return null;
+
+        var arms: std.ArrayList(ast.Arm) = .empty;
+
+        while (true) {
+            p.skipNewlines();
+            if (p.peek() == .r_brace or p.peek() == .eof) break;
+
+            const before = p.pos;
+
+            const pattern = try p.parsePattern() orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+
+            _ = try p.expect(.fat_arrow, "expected `=>`", "an arm looks like `Pattern => value`") orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+
+            const body = try p.parseExpr() orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+
+            try arms.append(p.arena, .{
+                .pattern = pattern,
+                .body = body,
+                .span = Span.merge(pattern.spanOf(), body.spanOf()),
+            });
+
+            if (p.peek() == .comma) _ = p.advance();
+            if (p.pos == before) p.pos += 1;
+        }
+
+        const close = try p.expect(.r_brace, "expected `}`", "the match is never closed") orelse p.current();
+
+        const scrut_ptr = try p.arena.create(ast.Expr);
+        scrut_ptr.* = scrutinee;
+
+        return .{ .match = .{
+            .scrutinee = scrut_ptr,
+            .arms = try arms.toOwnedSlice(p.arena),
+            .span = Span.merge(kw.span, close.span),
+        } };
     }
 
     fn parseType(p: *Parser) Error!?ast.TypeExpr {
@@ -427,6 +585,7 @@ const Parser = struct {
 
     fn parsePrimary(p: *Parser) Error!?ast.Expr {
         switch (p.peek()) {
+            .kw_match => return try p.parseMatch(),
             .l_bracket => {
                 const open = p.advance();
                 var elems: std.ArrayList(ast.Expr) = .empty;

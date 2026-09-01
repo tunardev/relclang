@@ -1,0 +1,8 @@
+error[E0024]: `Red` is already handled
+
+  --> unreachable_arm.rls:9:9
+   |
+ 9 |         Red => 2
+   |         ^^^ this arm is unreachable
+   |
+

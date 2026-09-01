@@ -178,6 +178,7 @@ pub fn run(
     return .{
         .functions = try functions.toOwnedSlice(arena),
         .structs = symbols.structs,
+        .enums = symbols.enums,
     };
 }
 
@@ -368,6 +369,14 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         },
 
         .var_ref => |v| {
+            if (f.lookup(v.name) == null) {
+                if (f.symbols.lookup(v.name)) |symbol| {
+                    if (symbol == .variant) {
+                        return lowerEnumLit(f, symbol.variant, &.{}, &.{}, v.span);
+                    }
+                }
+            }
+
             const binding = f.lookup(v.name) orelse {
                 try f.diags.err(
                     .unknown_variable,
@@ -449,6 +458,8 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         },
 
         .call => |c| return lowerCall(f, c),
+
+        .match => |m| return lowerMatch(f, m),
 
         .struct_lit => |s| return lowerStructLit(f, s),
 
@@ -586,6 +597,222 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
     }
 }
 
+fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
+    const scrutinee = try lowerExpr(f, m.scrutinee.*);
+    const scrut_ty = scrutinee.typeOf();
+
+    if (scrut_ty != .enumeration) {
+        if (!scrut_ty.isInvalid()) {
+            try f.diags.err(
+                .bad_pattern,
+                m.scrutinee.spanOf(),
+                try f.diags.fmt("cannot match on `{s}`", .{try f.tyName(scrut_ty)}),
+                "only enums can be matched",
+                null,
+            );
+        }
+        for (m.arms) |arm| _ = try lowerExpr(f, arm.body);
+        return .{ .match = .{
+            .scrutinee = try f.box(scrutinee),
+            .enumeration = 0,
+            .arms = &.{},
+            .ty = .invalid,
+            .span = m.span,
+        } };
+    }
+
+    const enum_index = scrut_ty.enumeration;
+    const def = f.symbols.enums[enum_index];
+
+    const covered = try f.gpa.alloc(bool, def.variants.len);
+    defer f.gpa.free(covered);
+    @memset(covered, false);
+
+    var has_wildcard = false;
+    var saw_invalid = false;
+    var arms: std.ArrayList(tir.MatchArm) = .empty;
+    var result_ty: ?Type = null;
+
+    for (m.arms) |arm| {
+        f.depth += 1;
+        const mark = f.bindings.items.len;
+
+        var variant_index: ?u32 = null;
+        var slots: []u32 = &.{};
+
+        switch (arm.pattern) {
+            .wildcard => {
+                if (has_wildcard) {
+                    try f.diags.err(
+                        .unreachable_arm,
+                        arm.pattern.spanOf(),
+                        "this arm is unreachable",
+                        "an earlier `_` already matches everything",
+                        null,
+                    );
+                }
+                has_wildcard = true;
+            },
+            .variant => |v| {
+                const index = def.variantIndex(v.name) orelse blk: {
+                    try f.diags.err(
+                        .bad_pattern,
+                        v.name_span,
+                        try f.diags.fmt("`{s}` has no variant `{s}`", .{ def.name, v.name }),
+                        "unknown variant",
+                        null,
+                    );
+                    break :blk null;
+                };
+
+                if (index) |vi| {
+                    if (covered[vi] or has_wildcard) {
+                        try f.diags.err(
+                            .unreachable_arm,
+                            v.name_span,
+                            try f.diags.fmt("`{s}` is already handled", .{v.name}),
+                            "this arm is unreachable",
+                            null,
+                        );
+                    }
+                    covered[vi] = true;
+                    variant_index = vi;
+
+                    const payload = def.variants[vi].payload;
+                    if (v.bindings.len != payload.len) {
+                        try f.diags.err(
+                            .bad_pattern,
+                            v.span,
+                            try f.diags.fmt("`{s}` carries {d} {s}", .{
+                                v.name,
+                                payload.len,
+                                if (payload.len == 1) "value" else "values",
+                            }),
+                            try f.diags.fmt("expected {d}, found {d}", .{ payload.len, v.bindings.len }),
+                            null,
+                        );
+                        for (v.bindings) |binding| _ = try f.declare(binding.name, .invalid);
+                    } else {
+                        slots = try f.arena.alloc(u32, payload.len);
+                        for (v.bindings, 0..) |binding, i| {
+                            slots[i] = try f.declare(binding.name, payload[i]);
+                        }
+                    }
+                }
+            },
+        }
+
+        const body = try lowerExpr(f, arm.body);
+        const body_ty = body.typeOf();
+
+        if (result_ty) |want| {
+            if (!body_ty.isInvalid() and !want.isInvalid() and !Type.eql(want, body_ty)) {
+                try f.diags.err(
+                    .type_mismatch,
+                    arm.body.spanOf(),
+                    "match arms must all have the same type",
+                    try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(want), try f.tyName(body_ty) }),
+                    null,
+                );
+            }
+        } else if (!body_ty.isInvalid()) {
+            result_ty = body_ty;
+        }
+
+        if (body_ty.isInvalid()) saw_invalid = true;
+
+        try arms.append(f.arena, .{
+            .variant = variant_index,
+            .bindings = slots,
+            .body = body,
+            .span = arm.span,
+        });
+
+        f.bindings.shrinkRetainingCapacity(mark);
+        f.depth -= 1;
+    }
+
+    if (!has_wildcard) {
+        var missing: std.ArrayList(u8) = .empty;
+        defer missing.deinit(f.gpa);
+        var count: usize = 0;
+
+        for (def.variants, 0..) |variant, i| {
+            if (covered[i]) continue;
+            if (count > 0) try missing.appendSlice(f.gpa, ", ");
+            try missing.appendSlice(f.gpa, variant.name);
+            count += 1;
+        }
+
+        if (count > 0) {
+            try f.diags.err(
+                .non_exhaustive,
+                m.span,
+                try f.diags.fmt("match on `{s}` is not exhaustive", .{def.name}),
+                try f.diags.fmt("missing {s}", .{missing.items}),
+                "add the missing arms, or a `_` arm",
+            );
+        }
+    }
+
+    return .{ .match = .{
+        .scrutinee = try f.box(scrutinee),
+        .enumeration = enum_index,
+        .arms = try arms.toOwnedSlice(f.arena),
+        .ty = result_ty orelse (if (saw_invalid) Type.invalid else Type.void),
+        .span = m.span,
+    } };
+}
+
+fn lowerEnumLit(
+    f: *Fn,
+    ref: resolve.VariantRef,
+    args: []const tir.Expr,
+    arg_spans: []const source.Span,
+    span: Span,
+) Error!tir.Expr {
+    const def = f.symbols.enums[ref.enumeration];
+    const variant = def.variants[ref.variant];
+
+    if (args.len != variant.payload.len) {
+        try f.diags.err(
+            .wrong_arg_count,
+            span,
+            try f.diags.fmt("`{s}` carries {d} {s}", .{
+                variant.name,
+                variant.payload.len,
+                if (variant.payload.len == 1) "value" else "values",
+            }),
+            try f.diags.fmt("expected {d}, found {d}", .{ variant.payload.len, args.len }),
+            null,
+        );
+    } else {
+        for (args, 0..) |arg, i| {
+            const got = arg.typeOf();
+            if (!got.isInvalid() and !Type.eql(variant.payload[i], got)) {
+                try f.diags.err(
+                    .type_mismatch,
+                    arg_spans[i],
+                    "variant payload type mismatch",
+                    try f.diags.fmt("expected `{s}`, found `{s}`", .{
+                        try f.tyName(variant.payload[i]),
+                        try f.tyName(got),
+                    }),
+                    null,
+                );
+            }
+        }
+    }
+
+    return .{ .enum_lit = .{
+        .enumeration = ref.enumeration,
+        .variant = ref.variant,
+        .payload = args,
+        .ty = .{ .enumeration = ref.enumeration },
+        .span = span,
+    } };
+}
+
 fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
     var args: std.ArrayList(tir.Expr) = .empty;
     for (c.args) |arg| try args.append(f.arena, try lowerExpr(f, arg));
@@ -608,6 +835,11 @@ fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
     };
 
     switch (symbol) {
+        .variant => |ref| {
+            const spans = try f.arena.alloc(source.Span, c.args.len);
+            for (c.args, 0..) |arg, i| spans[i] = arg.spanOf();
+            return lowerEnumLit(f, ref, lowered, spans, c.span);
+        },
         .builtin => |b| {
             const want = b.arity();
             if (lowered.len != want) {
@@ -1092,4 +1324,116 @@ test "nested arrays type correctly" {
     const ty = l.program.functions[0].locals[0].ty;
     try testing.expectEqual(@as(u64, 2), ty.array.len);
     try testing.expectEqual(@as(u64, 2), ty.array.elem.array.len);
+}
+
+test "a unit variant lowers to an enum literal" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn main() {\n    let c = Red\n    println(1)\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+    const lit = l.program.functions[0].body.stmts[0].let.init.enum_lit;
+    try testing.expectEqual(@as(u32, 0), lit.variant);
+    try testing.expectEqual(@as(usize, 0), lit.payload.len);
+}
+
+test "a payload variant carries its arguments" {
+    var l = try lowerText(testing.allocator, "enum S {\n    Pair(Int, Int)\n}\nfn main() {\n    let s = Pair(1, 2)\n    println(1)\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+    const lit = l.program.functions[0].body.stmts[0].let.init.enum_lit;
+    try testing.expectEqual(@as(usize, 2), lit.payload.len);
+    try testing.expectEqual(@as(i64, 2), lit.payload[1].int_const.value);
+}
+
+test "match binds payload values to local slots" {
+    var l = try lowerText(testing.allocator, "enum S {\n    Pair(Int, Int)\n}\nfn f(s: S) -> Int {\n    match s {\n        Pair(a, b) => a + b\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+    const m = l.program.functions[0].body.stmts[0].ret_value.match;
+    try testing.expectEqual(@as(usize, 1), m.arms.len);
+    try testing.expectEqual(@as(usize, 2), m.arms[0].bindings.len);
+    try testing.expect(types.Type.eql(.int, m.ty));
+}
+
+test "an exhaustive match needs no wildcard" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n        Green => 2\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "a missing variant reports E0023" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.non_exhaustive));
+}
+
+test "a wildcard makes a match exhaustive" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n        _ => 0\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "a repeated variant reports E0024" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n        Red => 2\n        Green => 3\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.unreachable_arm));
+}
+
+test "an arm after a wildcard reports E0024" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        _ => 0\n        Red => 1\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.unreachable_arm));
+}
+
+test "an unknown variant in a pattern reports E0025" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n}\nfn f(c: C) -> Int {\n    match c {\n        Blue => 1\n        _ => 0\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.bad_pattern));
+}
+
+test "the wrong binding count reports E0025 without cascading" {
+    var l = try lowerText(testing.allocator, "enum S {\n    Pair(Int, Int)\n}\nfn f(s: S) -> Int {\n    match s {\n        Pair(a) => a\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.bad_pattern));
+    try testing.expect(!l.has(.unknown_variable));
+    try testing.expectEqual(@as(usize, 1), l.diags.list.items.len);
+}
+
+test "arms of different types report E0008" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn f(c: C) -> Int {\n    match c {\n        Red => 1\n        Green => \"two\"\n    }\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.type_mismatch));
+}
+
+test "matching a non enum reports E0025" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let n = 3\n    println(match n {\n        _ => 1\n    })\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.bad_pattern));
+}
+
+test "a wrong payload arity reports E0007" {
+    var l = try lowerText(testing.allocator, "enum S {\n    One(Int)\n}\nfn main() {\n    let s = One(1, 2)\n    println(1)\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.wrong_arg_count));
+}
+
+test "a wrong payload type reports E0008" {
+    var l = try lowerText(testing.allocator, "enum S {\n    One(Int)\n}\nfn main() {\n    let s = One(\"x\")\n    println(1)\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.type_mismatch));
+}
+
+test "pattern bindings do not leak out of their arm" {
+    var l = try lowerText(testing.allocator, "enum S {\n    One(Int)\n}\nfn f(s: S) -> Int {\n    match s {\n        One(v) => v\n    }\n}\nfn main() {\n    println(v)\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.unknown_variable));
+}
+
+test "a match used as a statement is void" {
+    var l = try lowerText(testing.allocator, "enum C {\n    Red\n    Green\n}\nfn main() {\n    let c = Red\n    match c {\n        Red => println(\"r\")\n        Green => println(\"g\")\n    }\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+    try testing.expect(types.Type.eql(.void, l.program.functions[0].body.stmts[1].expr.match.ty));
 }

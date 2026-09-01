@@ -14,6 +14,26 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
     try w.writeAll("const std = @import(\"std\");\n");
     try w.print("const rt = @import(\"{s}\");\n\n", .{runtime.file_name});
 
+    for (program.enums, 0..) |def, index| {
+        try w.print("const E{d}_{s} = union(enum) {{\n", .{ index, def.name });
+        for (def.variants, 0..) |variant, vi| {
+            try w.print("    v{d}_{s}: ", .{ vi, variant.name });
+            if (variant.payload.len == 0) {
+                try w.writeAll("void");
+            } else {
+                try w.writeAll("struct { ");
+                for (variant.payload, 0..) |ty, fi| {
+                    if (fi > 0) try w.writeAll(", ");
+                    try w.print("f{d}: ", .{fi});
+                    try emitType(w, program, ty);
+                }
+                try w.writeAll(" }");
+            }
+            try w.writeAll(",\n");
+        }
+        try w.writeAll("};\n\n");
+    }
+
     for (program.structs, 0..) |def, index| {
         try w.print("const S{d}_{s} = struct {{\n", .{ index, def.name });
         for (def.fields, 0..) |field, i| {
@@ -59,6 +79,7 @@ fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void 
         .int => try w.writeAll("i64"),
         .str => try w.writeAll("[]const u8"),
         .strukt => |i| try w.print("S{d}_{s}", .{ i, program.structs[i].name }),
+        .enumeration => |i| try w.print("E{d}_{s}", .{ i, program.enums[i].name }),
         .array => |a| {
             try w.print("[{d}]", .{a.len});
             try emitType(w, program, a.elem.*);
@@ -74,9 +95,10 @@ fn emitStmt(w: *std.Io.Writer, program: tir.Program, f: tir.Function, stmt: tir.
             try w.writeAll(";\n");
         },
         .expr => |e| {
+            const block_form = e == .match and (e.match.ty == .void or e.match.ty == .invalid);
             try w.writeAll("    ");
             try emitExpr(w, program, f, e);
-            try w.writeAll(";\n");
+            try w.writeAll(if (block_form) "\n" else ";\n");
         },
         .let => |l| {
             try w.writeAll("    const ");
@@ -195,7 +217,75 @@ fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, expr: tir.
             try emitExpr(w, program, f, x.index.*);
             try w.writeAll("))]");
         },
+
+        .enum_lit => |lit| {
+            const def = program.enums[lit.enumeration];
+            const variant = def.variants[lit.variant];
+            try w.print("E{d}_{s}{{ .v{d}_{s} = ", .{ lit.enumeration, def.name, lit.variant, variant.name });
+            if (lit.payload.len == 0) {
+                try w.writeAll("{}");
+            } else {
+                try w.writeAll(".{ ");
+                for (lit.payload, 0..) |value, i| {
+                    if (i > 0) try w.writeAll(", ");
+                    try w.print(".f{d} = ", .{i});
+                    try emitExpr(w, program, f, value);
+                }
+                try w.writeAll(" }");
+            }
+            try w.writeAll(" }");
+        },
+
+        .match => |m| try emitMatch(w, program, f, m),
     }
+}
+
+fn emitMatch(w: *std.Io.Writer, program: tir.Program, f: tir.Function, m: tir.Match) Error!void {
+    const def = program.enums[m.enumeration];
+    const is_void = m.ty == .void or m.ty == .invalid;
+
+    try w.writeAll("switch (");
+    try emitExpr(w, program, f, m.scrutinee.*);
+    try w.writeAll(") {\n");
+
+    for (m.arms) |arm| {
+        try w.writeAll("        ");
+
+        if (arm.variant) |vi| {
+            try w.print(".v{d}_{s}", .{ vi, def.variants[vi].name });
+        } else {
+            try w.writeAll("else");
+        }
+
+        const captures = arm.variant != null and def.variants[arm.variant.?].payload.len > 0;
+        if (captures) try w.writeAll(" => |__p| ") else try w.writeAll(" => ");
+
+        if (is_void) {
+            try w.writeAll("{\n");
+        } else {
+            try w.writeAll("blk: {\n");
+        }
+
+        if (captures and arm.bindings.len == 0) try w.writeAll("            _ = __p;\n");
+
+        for (arm.bindings, 0..) |slot, i| {
+            try w.writeAll("            const ");
+            try emitLocalName(w, f, slot);
+            try w.print(" = __p.f{d};\n", .{i});
+            if (!f.locals[slot].used) {
+                try w.writeAll("            _ = ");
+                try emitLocalName(w, f, slot);
+                try w.writeAll(";\n");
+            }
+        }
+
+        try w.writeAll("            ");
+        if (!is_void) try w.writeAll("break :blk ");
+        try emitExpr(w, program, f, arm.body);
+        try w.writeAll(";\n        },\n");
+    }
+
+    try w.writeAll("    }");
 }
 
 fn emitZigString(w: *std.Io.Writer, value: []const u8) Error!void {

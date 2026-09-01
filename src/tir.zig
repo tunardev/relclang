@@ -87,6 +87,29 @@ pub const Index = struct {
     span: Span,
 };
 
+pub const EnumLit = struct {
+    enumeration: u32,
+    variant: u32,
+    payload: []const Expr,
+    ty: types.Type,
+    span: Span,
+};
+
+pub const MatchArm = struct {
+    variant: ?u32,
+    bindings: []const u32,
+    body: Expr,
+    span: Span,
+};
+
+pub const Match = struct {
+    scrutinee: *const Expr,
+    enumeration: u32,
+    arms: []const MatchArm,
+    ty: types.Type,
+    span: Span,
+};
+
 pub const CallFunction = struct {
     target: usize,
     args: []const Expr,
@@ -106,6 +129,8 @@ pub const Expr = union(enum) {
     field: FieldAccess,
     array_lit: ArrayLit,
     index: Index,
+    enum_lit: EnumLit,
+    match: Match,
 
     pub fn typeOf(e: Expr) types.Type {
         return switch (e) {
@@ -120,6 +145,8 @@ pub const Expr = union(enum) {
             .field => |f| f.ty,
             .array_lit => |a| a.ty,
             .index => |x| x.ty,
+            .enum_lit => |lit| lit.ty,
+            .match => |m| m.ty,
         };
     }
 
@@ -136,6 +163,8 @@ pub const Expr = union(enum) {
             .field => |f| f.span,
             .array_lit => |a| a.span,
             .index => |x| x.span,
+            .enum_lit => |lit| lit.span,
+            .match => |m| m.span,
         };
     }
 };
@@ -176,4 +205,5 @@ pub const Function = struct {
 pub const Program = struct {
     functions: []const Function,
     structs: []const types.StructDef,
+    enums: []const types.EnumDef,
 };

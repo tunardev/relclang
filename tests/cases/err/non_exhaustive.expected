@@ -1,0 +1,9 @@
+error[E0023]: match on `Shape` is not exhaustive
+
+  --> non_exhaustive.rls:8:5
+   |
+ 8 |     match s {
+   |     ^^^^^^^^^^ missing Rect, Empty
+   |
+help: add the missing arms, or a `_` arm
+

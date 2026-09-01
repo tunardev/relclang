@@ -1,0 +1,8 @@
+error[E0025]: `Both` carries 2 values
+
+  --> bad_pattern.rls:7:9
+   |
+ 7 |         Both(a) => a
+   |         ^^^^^^^ expected 2, found 1
+   |
+
