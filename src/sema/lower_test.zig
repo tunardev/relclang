@@ -758,3 +758,78 @@ test "mutably borrowing an unknown variable reports E0012" {
     defer l.deinit();
     try testing.expect(l.has(.unknown_variable));
 }
+
+test "a trailing return satisfies the return type" {
+    var l = try lowerText(testing.allocator, "fn f() -> Int {\n    return 1\n}\nfn main() {\n    println(f())\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "a return after an early return needs no trailing value" {
+    var l = try lowerText(testing.allocator,
+        \\fn f(n: Int) -> Int {
+        \\    if n > 0 {
+        \\        return 1
+        \\    }
+        \\    return 2
+        \\}
+        \\fn main() {
+        \\    println(f(1))
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "an if whose branches both return needs no trailing value" {
+    var l = try lowerText(testing.allocator,
+        \\fn f(n: Int) -> Int {
+        \\    if n > 0 {
+        \\        return 1
+        \\    } else {
+        \\        return 2
+        \\    }
+        \\}
+        \\fn main() {
+        \\    println(f(1))
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "an if that only sometimes returns still needs a value" {
+    var l = try lowerText(testing.allocator,
+        \\fn f(n: Int) -> Int {
+        \\    if n > 0 {
+        \\        return 1
+        \\    }
+        \\}
+        \\fn main() {
+        \\    println(f(1))
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(l.has(.missing_return));
+}
+
+test "a returning branch unifies with a valued branch" {
+    var l = try lowerText(testing.allocator,
+        \\fn f(n: Int) -> Int {
+        \\    if n > 0 {
+        \\        return 1
+        \\    } else {
+        \\        2
+        \\    }
+        \\}
+        \\fn main() {
+        \\    println(f(1))
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}

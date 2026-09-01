@@ -1,0 +1,36 @@
+fn only_return() -> Int {
+    return 1
+}
+
+fn after_guard(n: Int) -> Int {
+    if n > 0 {
+        return 10
+    }
+    return 20
+}
+
+fn both_branches(n: Int) -> Int {
+    if n > 0 {
+        return 100
+    } else {
+        return 200
+    }
+}
+
+fn mixed(n: Int) -> Int {
+    if n > 0 {
+        return 1000
+    } else {
+        2000
+    }
+}
+
+fn main() {
+    println(only_return())
+    println(after_guard(1))
+    println(after_guard(0))
+    println(both_branches(1))
+    println(both_branches(0))
+    println(mixed(1))
+    println(mixed(0))
+}

@@ -191,23 +191,27 @@ pub fn lowerIf(f: *Fn, node: ast.If, wants_value: bool) Error!tir.Expr {
     }
 
     if (want) {
-        const then_ty = if (then_block.result) |r| r.typeOf() else Type.void;
-        const else_ty = if (else_block) |b| (if (b.result) |r| r.typeOf() else Type.void) else Type.void;
+        const then_ty = branchType(then_block);
+        const else_ty = if (else_block) |b| branchType(b) else Type.void;
 
-        if (!then_ty.isInvalid() and !else_ty.isInvalid() and !Type.eql(then_ty, else_ty)) {
+        if (then_ty != null and else_ty != null and
+            !then_ty.?.isInvalid() and !else_ty.?.isInvalid() and !Type.eql(then_ty.?, else_ty.?))
+        {
             try f.diags.err(
                 .type_mismatch,
                 node.span,
                 "if branches must have the same type",
                 try f.diags.fmt("`then` is `{s}` but `else` is `{s}`", .{
-                    try f.tyName(then_ty),
-                    try f.tyName(else_ty),
+                    try f.tyName(then_ty.?),
+                    try f.tyName(else_ty.?),
                 }),
                 null,
             );
             ty = .invalid;
+        } else if (then_ty) |t| {
+            ty = if (t.isInvalid()) (else_ty orelse t) else t;
         } else {
-            ty = if (then_ty.isInvalid()) else_ty else then_ty;
+            ty = else_ty orelse .void;
         }
     }
 
@@ -218,6 +222,11 @@ pub fn lowerIf(f: *Fn, node: ast.If, wants_value: bool) Error!tir.Expr {
         .ty = ty,
         .span = node.span,
     } };
+}
+
+fn branchType(block: tir.Block) ?Type {
+    if (block.result) |r| return r.typeOf();
+    return if (block.diverges()) null else .void;
 }
 
 pub fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {

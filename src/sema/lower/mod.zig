@@ -151,7 +151,7 @@ pub fn lowerFunction(
             }
         }
 
-        if (info.ret != .void) {
+        if (info.ret != .void and !body.diverges()) {
             if (body.result) |result| {
                 const ty = result.typeOf();
                 if (!ty.isInvalid() and !Type.eql(ty, info.ret)) {

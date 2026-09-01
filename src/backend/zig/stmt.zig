@@ -86,6 +86,13 @@ pub fn emitValueBlock(
     lbl: *u32,
     block: tir.Block,
 ) Error!void {
+    if (block.result == null and block.diverges()) {
+        try w.writeAll("{\n");
+        try emitBlockBody(w, program, f, lbl, block, 3);
+        try w.writeAll("    }");
+        return;
+    }
+
     const id = lbl.*;
     lbl.* += 1;
 

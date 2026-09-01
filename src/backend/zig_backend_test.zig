@@ -164,3 +164,25 @@ test "emits negation" {
     defer gpa.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "@as(i64, -5)") != null);
 }
+
+test "a diverging branch in a value if emits no block label" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa,
+        \\fn pick(n: Int) -> Int {
+        \\    if n > 0 {
+        \\        return 1
+        \\    } else {
+        \\        2
+        \\    }
+        \\}
+        \\fn main() {
+        \\    println(pick(1))
+        \\}
+        \\
+    );
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "if ((v0_n > @as(i64, 0))) {\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "break :b0 {}") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "break :b0 @as(i64, 2)") != null);
+}

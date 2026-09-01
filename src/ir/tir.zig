@@ -216,6 +216,16 @@ pub const Expr = union(enum) {
         };
     }
 
+    pub fn diverges(e: Expr) bool {
+        return switch (e) {
+            .if_expr => |i| i.then_block.diverges() and (if (i.else_block) |b| b.diverges() else false),
+            .match => |m| m.arms.len > 0 and for (m.arms) |arm| {
+                if (!arm.body.diverges()) break false;
+            } else true,
+            else => false,
+        };
+    }
+
     pub fn spanOf(e: Expr) Span {
         return switch (e) {
             .string_const => |s| s.span,
@@ -290,6 +300,16 @@ pub const Local = struct {
 pub const Block = struct {
     stmts: []const Stmt,
     result: ?*const Expr,
+
+    pub fn diverges(b: Block) bool {
+        if (b.result) |r| return r.diverges();
+        if (b.stmts.len == 0) return false;
+        return switch (b.stmts[b.stmts.len - 1]) {
+            .ret => true,
+            .expr => |e| e.diverges(),
+            else => false,
+        };
+    }
 };
 
 pub const Function = struct {
