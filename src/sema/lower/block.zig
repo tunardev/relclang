@@ -255,6 +255,7 @@ pub fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {
                         null,
                     );
                 }
+                try f.checkEscape(lowered, f.name);
                 value = lowered;
             } else if (f.ret_ty != .void) {
                 try f.diags.err(
@@ -314,15 +315,7 @@ pub fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {
 
             const slot = try f.declareMut(l.name, ty, l.is_mut);
 
-            if (ty == .ref) {
-                if (init_expr == .borrow) {
-                    f.locals.items[slot].borrows_local = f.rootSlotOf(init_expr.borrow.operand.*);
-                } else if (init_expr == .local_ref) {
-                    f.locals.items[slot].borrows_local = f.locals.items[init_expr.local_ref.slot].borrows_local;
-                } else if (init_expr == .vec_op and init_expr.vec_op.args.len > 0) {
-                    f.locals.items[slot].borrows_local = f.rootSlotOf(init_expr.vec_op.args[0]);
-                }
-            }
+            if (ty == .ref) f.locals.items[slot].borrows_local = f.refRoot(init_expr);
 
             return .{ .let = .{
                 .slot = slot,

@@ -643,3 +643,124 @@ test "growing a vec with no live borrow is allowed" {
     defer d.deinit();
     try testing.expect(!d.hasErrors());
 }
+
+test "returning a local reference with return reports E0036" {
+    var d = try checkText(testing.allocator,
+        \\fn f() -> &Int {
+        \\    let x = 1
+        \\    return &x
+        \\}
+        \\fn main() {
+        \\    let r = f()
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .escaping_reference));
+}
+
+test "returning a local reference from an if reports E0036" {
+    var d = try checkText(testing.allocator,
+        \\fn f(c: Bool, p: &Int) -> &Int {
+        \\    let x = 1
+        \\    if c { p } else { &x }
+        \\}
+        \\fn main() {
+        \\    let n = 1
+        \\    let r = f(true, &n)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .escaping_reference));
+}
+
+test "returning a local reference from a match reports E0036" {
+    var d = try checkText(testing.allocator,
+        \\enum E {
+        \\    A
+        \\    B
+        \\}
+        \\fn f(e: E, p: &Int) -> &Int {
+        \\    let x = 1
+        \\    match e {
+        \\        A => p
+        \\        B => &x
+        \\    }
+        \\}
+        \\fn main() {
+        \\    let n = 1
+        \\    let r = f(A, &n)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .escaping_reference));
+}
+
+test "returning a reference into a local vec reports E0036" {
+    var d = try checkText(testing.allocator,
+        \\fn f(alloc: Allocator) -> &String {
+        \\    let v: Vec<String> = Vec.new(alloc)
+        \\    v.push(String.new(alloc))
+        \\    v.get(0)
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let r = f(alloc)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .escaping_reference));
+}
+
+test "returning a reference into a vec parameter is allowed" {
+    var d = try checkText(testing.allocator,
+        \\fn first(v: &Vec<String>) -> &String {
+        \\    v.get(0)
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<String> = Vec.new(alloc)
+        \\    v.push(String.new(alloc))
+        \\    println(first(&v))
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}
+
+test "returning a local reference through a call reports E0036" {
+    var d = try checkText(testing.allocator,
+        \\fn same(r: &Int) -> &Int {
+        \\    r
+        \\}
+        \\fn f() -> &Int {
+        \\    let x = 1
+        \\    same(&x)
+        \\}
+        \\fn main() {
+        \\    let r = f()
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .escaping_reference));
+}
+
+test "a binding that may point at a local cannot be returned" {
+    var d = try checkText(testing.allocator,
+        \\fn f(c: Bool, p: &Int) -> &Int {
+        \\    let x = 1
+        \\    let r = if c { p } else { &x }
+        \\    r
+        \\}
+        \\fn main() {
+        \\    let n = 1
+        \\    let r = f(true, &n)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .escaping_reference));
+}
