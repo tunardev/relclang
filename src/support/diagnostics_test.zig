@@ -215,7 +215,8 @@ test "every code has a distinct id" {
         .bad_pattern,     .not_assignable,     .immutable_assign,
         .use_after_move,  .move_in_loop,       .borrow_conflict,
         .move_while_borrowed, .cannot_infer,      .unknown_trait,
-        .unknown_method,      .missing_impl,
+        .unknown_method,      .missing_impl,       .escaping_reference,
+        .reference_field,
     };
     for (codes, 0..) |a, i| {
         for (codes[i + 1 ..]) |b| {

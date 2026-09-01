@@ -1,0 +1,12 @@
+struct Point {
+    x: Int
+}
+
+fn borrow_local() -> &Point {
+    let temporary = Point { x: 1 }
+    &temporary
+}
+
+fn main() {
+    println(borrow_local().x)
+}

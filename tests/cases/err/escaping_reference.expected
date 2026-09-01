@@ -1,0 +1,9 @@
+error[E0036]: this reference points at `temporary`, which is local to `borrow_local`
+
+  --> escaping_reference.rls:7:5
+   |
+ 7 |     &temporary
+   |     ^^^^^^^^^^ the value is gone once the function returns
+   |
+help: return the value itself, or take the reference as a parameter
+

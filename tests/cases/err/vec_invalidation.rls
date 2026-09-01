@@ -1,0 +1,14 @@
+fn main(alloc: Allocator) {
+    let rows: Vec<Vec<Int>> = Vec.new(alloc)
+
+    let first: Vec<Int> = Vec.new(alloc)
+    first.push(1)
+    rows.push(first)
+
+    let held = rows.get(0)
+
+    let second: Vec<Int> = Vec.new(alloc)
+    rows.push(second)
+
+    println(held.len())
+}

@@ -284,6 +284,7 @@ pub const Local = struct {
     is_mut: bool,
     assigned: bool,
     moved: bool = false,
+    borrows_local: ?u32 = null,
 };
 
 pub const Block = struct {

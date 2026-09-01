@@ -51,6 +51,32 @@ pub const Fn = struct {
         f.temps.deinit(f.gpa);
     }
 
+    pub fn escapingLocal(f: *Fn, value: tir.Expr, param_count: u32) ?u32 {
+        switch (value) {
+            .borrow => |b| {
+                const slot = f.rootSlotOf(b.operand.*) orelse return null;
+                return if (slot >= param_count) slot else null;
+            },
+            .local_ref => |l| {
+                const origin = f.locals.items[l.slot].borrows_local orelse return null;
+                return if (origin >= param_count) origin else null;
+            },
+            .deref => |d| return f.escapingLocal(d.operand.*, param_count),
+            else => return null,
+        }
+    }
+
+    pub fn rootSlotOf(f: *Fn, value: tir.Expr) ?u32 {
+        return switch (value) {
+            .local_ref => |l| l.slot,
+            .field => |x| f.rootSlotOf(x.base.*),
+            .index => |x| f.rootSlotOf(x.base.*),
+            .deref => |d| f.rootSlotOf(d.operand.*),
+            .borrow => |b| f.rootSlotOf(b.operand.*),
+            else => null,
+        };
+    }
+
     pub fn hoistOwning(f: *Fn, value: tir.Expr) Error!tir.Expr {
         const ty = value.typeOf();
         if (!types.needsDrop(ty, f.symbols.registry())) return value;

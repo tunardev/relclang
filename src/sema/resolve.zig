@@ -141,6 +141,18 @@ pub fn run(
             for (variant.payload) |ty_expr| {
                 const payload_ty = try resolveTypeIn(arena, &table, ty_expr, decl.type_params, diags);
 
+                if (types.hasReference(payload_ty)) {
+                    try diags.err(
+                        .reference_field,
+                        ty_expr.spanOf(),
+                        try diags.fmt("an enum cannot store `{s}`", .{
+                            try types.nameOf(arena, table.registry(), payload_ty),
+                        }),
+                        "a reference has no way to say how long it stays valid",
+                        "store the value itself, or pass the reference as an argument",
+                    );
+                }
+
                 try payload.append(arena, payload_ty);
             }
             try variants.append(arena, .{
@@ -200,6 +212,18 @@ pub fn run(
                 }
             }
             const field_ty = try resolveTypeIn(arena, &table, field.ty, decl.type_params, diags);
+
+            if (types.hasReference(field_ty)) {
+                try diags.err(
+                    .reference_field,
+                    field.ty.spanOf(),
+                    try diags.fmt("a struct cannot store `{s}`", .{
+                        try types.nameOf(arena, table.registry(), field_ty),
+                    }),
+                    "a reference has no way to say how long it stays valid",
+                    "store the value itself, or pass the reference as an argument",
+                );
+            }
 
             try fields.append(arena, .{
                 .name = field.name,

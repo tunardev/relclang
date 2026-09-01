@@ -134,6 +134,23 @@ pub fn lowerFunction(
 
         const body = try lowerBlock(&ctx, f.body, info.ret != .void);
 
+        if (types.hasReference(info.ret)) {
+            if (body.result) |result| {
+                if (ctx.escapingLocal(result.*, param_count)) |slot| {
+                    try diags.err(
+                        .escaping_reference,
+                        result.spanOf(),
+                        try diags.fmt("this reference points at `{s}`, which is local to `{s}`", .{
+                            ctx.locals.items[slot].name,
+                            f.name,
+                        }),
+                        "the value is gone once the function returns",
+                        "return the value itself, or take the reference as a parameter",
+                    );
+                }
+            }
+        }
+
         if (info.ret != .void) {
             if (body.result) |result| {
                 const ty = result.typeOf();

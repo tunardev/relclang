@@ -529,3 +529,117 @@ test "main may take an allocator or nothing" {
     defer bad.deinit();
     try testing.expect(has(bad, .bad_signature));
 }
+
+test "returning a reference to a local reports E0036" {
+    var d = try checkText(testing.allocator,
+        \\struct R {
+        \\    id: Int
+        \\}
+        \\fn dangle() -> &R {
+        \\    let local = R { id: 1 }
+        \\    &local
+        \\}
+        \\fn main() {
+        \\    println(dangle().id)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .escaping_reference));
+}
+
+test "returning a local reference through a binding reports E0036" {
+    var d = try checkText(testing.allocator,
+        \\struct R {
+        \\    id: Int
+        \\}
+        \\fn dangle() -> &R {
+        \\    let local = R { id: 1 }
+        \\    let r = &local
+        \\    r
+        \\}
+        \\fn main() {
+        \\    println(dangle().id)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .escaping_reference));
+}
+
+test "passing a reference straight through is allowed" {
+    var d = try checkText(testing.allocator,
+        \\struct R {
+        \\    id: Int
+        \\}
+        \\fn pass(r: &R) -> &R {
+        \\    r
+        \\}
+        \\fn main() {
+        \\    let x = R { id: 1 }
+        \\    println(pass(&x).id)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}
+
+test "a struct cannot store a reference" {
+    var d = try checkText(testing.allocator,
+        \\struct Holder {
+        \\    r: &Int
+        \\}
+        \\fn main() {
+        \\    println(1)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .reference_field));
+}
+
+test "an enum cannot store a reference" {
+    var d = try checkText(testing.allocator,
+        \\enum Holder {
+        \\    Some(&Int)
+        \\}
+        \\fn main() {
+        \\    println(1)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .reference_field));
+}
+
+test "growing a vec while an element is borrowed reports E0030" {
+    var d = try checkText(testing.allocator,
+        \\fn main(alloc: Allocator) {
+        \\    let rows: Vec<Vec<Int>> = Vec.new(alloc)
+        \\    let a: Vec<Int> = Vec.new(alloc)
+        \\    rows.push(a)
+        \\    let first = rows.get(0)
+        \\    let b: Vec<Int> = Vec.new(alloc)
+        \\    rows.push(b)
+        \\    println(first.len())
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .borrow_conflict));
+}
+
+test "growing a vec with no live borrow is allowed" {
+    var d = try checkText(testing.allocator,
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<Int> = Vec.new(alloc)
+        \\    v.push(1)
+        \\    v.push(2)
+        \\    println(v.get(0))
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}

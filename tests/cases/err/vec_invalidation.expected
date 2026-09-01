@@ -1,0 +1,9 @@
+error[E0030]: cannot change `rows` while it is borrowed
+
+   --> vec_invalidation.rls:11:5
+    |
+ 11 |     rows.push(second)
+    |     ^^^^^^^^^^^^^^^^^ a reference into it is still in scope
+    |
+help: growing it can move the memory the reference points at
+

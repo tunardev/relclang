@@ -305,6 +305,16 @@ pub fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {
 
             const slot = try f.declareMut(l.name, ty, l.is_mut);
 
+            if (ty == .ref) {
+                if (init_expr == .borrow) {
+                    f.locals.items[slot].borrows_local = f.rootSlotOf(init_expr.borrow.operand.*);
+                } else if (init_expr == .local_ref) {
+                    f.locals.items[slot].borrows_local = f.locals.items[init_expr.local_ref.slot].borrows_local;
+                } else if (init_expr == .vec_op and init_expr.vec_op.args.len > 0) {
+                    f.locals.items[slot].borrows_local = f.rootSlotOf(init_expr.vec_op.args[0]);
+                }
+            }
+
             return .{ .let = .{
                 .slot = slot,
                 .init = init_expr,

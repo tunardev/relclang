@@ -67,6 +67,13 @@ booleans, strings and references copy. Borrow instead of moving with
 
 A value can have many shared borrows, or one mutable borrow, never both.
 
+References cannot outlive what they point at. A function cannot return a
+reference to its own local, structs and enums cannot store references,
+and a `Vec` cannot grow while a reference into it is still in use:
+
+    let first = rows.get(0)
+    rows.push(other)      # error: cannot change `rows` while it is borrowed
+
 Generics and traits, resolved at compile time:
 
     trait Show {

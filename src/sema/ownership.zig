@@ -89,6 +89,30 @@ const Checker = struct {
         });
     }
 
+    fn requireExclusive(c: *Checker, recv: tir.Expr, span: Span) Error!void {
+        const slot = c.rootSlot(recv) orelse return;
+        const existing = c.borrowOf(slot) orelse return;
+        const local = c.func.locals[slot];
+
+        try c.diags.err(
+            .borrow_conflict,
+            span,
+            try c.diags.fmt("cannot change `{s}` while it is borrowed", .{local.name}),
+            if (existing.mutable) "it is already borrowed mutably" else "a reference into it is still in scope",
+            "growing it can move the memory the reference points at",
+        );
+    }
+
+    fn borrowReceiver(c: *Checker, recv: tir.Expr, span: Span) Error!void {
+        const slot = c.rootSlot(recv) orelse return;
+        try c.borrows.append(c.gpa, .{
+            .slot = slot,
+            .mutable = false,
+            .temporary = !c.persist_borrows,
+            .span = span,
+        });
+    }
+
     fn dropTemporaries(c: *Checker) void {
         var i: usize = 0;
         while (i < c.borrows.items.len) {
@@ -159,11 +183,17 @@ const Checker = struct {
             .vec_op => |v| switch (v.op) {
                 .push, .str_push, .str_push_int => {
                     try c.read(v.args[0]);
+                    try c.requireExclusive(v.args[0], v.span);
                     if (v.args.len > 1) try c.consume(v.args[1]);
                 },
                 .set => {
                     for (v.args[0..@min(2, v.args.len)]) |arg| try c.read(arg);
+                    try c.requireExclusive(v.args[0], v.span);
                     if (v.args.len > 2) try c.consume(v.args[2]);
+                },
+                .get => {
+                    for (v.args) |arg| try c.read(arg);
+                    if (v.ty == .ref) try c.borrowReceiver(v.args[0], v.span);
                 },
                 else => for (v.args) |arg| try c.read(arg),
             },

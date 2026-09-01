@@ -98,6 +98,15 @@ pub const Registry = struct {
     enums: []const EnumDef,
 };
 
+pub fn hasReference(t: Type) bool {
+    return switch (t) {
+        .ref => true,
+        .array => |a| hasReference(a.elem.*),
+        .vec => |v| hasReference(v.elem.*),
+        else => false,
+    };
+}
+
 pub fn hasParam(t: Type) bool {
     return switch (t) {
         .param => true,
