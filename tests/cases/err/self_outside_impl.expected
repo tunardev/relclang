@@ -1,0 +1,9 @@
+error[E0017]: `self` is only allowed in an `impl` method
+
+  --> self_outside_impl.rls:1:4
+   |
+ 1 | fn describe(self) -> Int {
+   |    ^^^^^^^^ this function is not inside an `impl`
+   |
+help: write `impl Trait for Type { fn ... }` to use `self`
+

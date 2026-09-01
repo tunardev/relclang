@@ -1,0 +1,8 @@
+error[E0012]: cannot find `total` in this scope
+
+  --> assign_unknown.rls:2:5
+   |
+ 2 |     total = 1
+   |     ^^^^^ not defined here
+   |
+

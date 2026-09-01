@@ -1,0 +1,16 @@
+struct Bag {
+    items: Vec<Int>
+}
+
+fn consume(v: Vec<Int>) {
+    println(v.len())
+}
+
+fn steal(b: &Bag) {
+    consume(b.items)
+}
+
+fn main(alloc: Allocator) {
+    let bag = Bag { items: Vec.new(alloc) }
+    steal(&bag)
+}

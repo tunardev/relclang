@@ -1,0 +1,9 @@
+error[E0027]: cannot change `v` through a shared reference
+
+  --> push_through_reference.rls:2:5
+   |
+ 2 |     v.push(1)
+   |     ^^^^^^^^^ `&Vec<Int>` only allows reading
+   |
+help: take `&mut Vec<Int>` to change it
+

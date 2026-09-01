@@ -1,0 +1,8 @@
+error[E0012]: cannot find `missing` in this scope
+
+  --> generic_error_once.rls:2:5
+   |
+ 2 |     missing
+   |     ^^^^^^^ not defined here
+   |
+

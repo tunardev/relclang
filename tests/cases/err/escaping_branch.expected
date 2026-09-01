@@ -1,0 +1,9 @@
+error[E0036]: this reference points at `local`, which is local to `pick`
+
+  --> escaping_branch.rls:3:5
+   |
+ 3 |     if c { p } else { &local }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ the value is gone once the function returns
+   |
+help: return the value itself, or take the reference as a parameter
+

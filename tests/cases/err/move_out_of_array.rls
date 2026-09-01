@@ -1,0 +1,12 @@
+fn make(alloc: Allocator) -> Vec<Int> {
+    Vec.new(alloc)
+}
+
+fn consume(v: Vec<Int>) {
+    println(v.len())
+}
+
+fn main(alloc: Allocator) {
+    let pair = [make(alloc), make(alloc)]
+    consume(pair[0])
+}

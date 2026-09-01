@@ -1,0 +1,8 @@
+fn id<T>(x: T) -> T {
+    missing
+}
+
+fn main() {
+    let a = id(1)
+    let b = id("s")
+}

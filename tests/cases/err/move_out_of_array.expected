@@ -1,0 +1,9 @@
+error[E0038]: cannot move a `Vec<Int>` out of an array
+
+   --> move_out_of_array.rls:11:13
+    |
+ 11 |     consume(pair[0])
+    |             ^^^^^^^ the array still owns this element
+    |
+help: borrow it with `&` instead
+

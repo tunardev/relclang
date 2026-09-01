@@ -1,0 +1,9 @@
+error[E0017]: `show` does not match its declaration in `Show`
+
+   --> impl_signature.rls:10:8
+    |
+ 10 |     fn show(self) -> Int {
+    |        ^^^^ returns `Int`, but the trait declares `Str`
+    |
+help: make the impl method match the trait exactly
+

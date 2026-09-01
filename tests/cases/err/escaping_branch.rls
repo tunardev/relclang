@@ -1,0 +1,9 @@
+fn pick(c: Bool, p: &Int) -> &Int {
+    let local = 1
+    if c { p } else { &local }
+}
+
+fn main() {
+    let n = 5
+    let r = pick(true, &n)
+}

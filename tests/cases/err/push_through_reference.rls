@@ -1,0 +1,9 @@
+fn add(v: &Vec<Int>) {
+    v.push(1)
+}
+
+fn main(alloc: Allocator) {
+    let v: Vec<Int> = Vec.new(alloc)
+    add(&v)
+    println(v.len())
+}

@@ -1,0 +1,9 @@
+error[E0038]: cannot move a `Vec<Int>` out of a reference
+
+   --> move_out_of_reference.rls:10:13
+    |
+ 10 |     consume(b.items)
+    |             ^^^^^^^ only borrowed here
+    |
+help: the owner frees it, so copy the value or take the owner itself
+
