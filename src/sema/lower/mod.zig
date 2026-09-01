@@ -111,7 +111,6 @@ pub fn lowerFunction(
         var slot_offset: usize = 0;
         if (f.has_self) {
             _ = try ctx.declareMut("self", info.params[0], false);
-            ctx.locals.items[0].used = true;
             slot_offset = 1;
         }
 
@@ -126,7 +125,6 @@ pub fn lowerFunction(
                 );
             }
             _ = try ctx.declareMut(param.name, info.params[i + slot_offset], false);
-            ctx.locals.items[i + slot_offset].used = true;
         }
 
         const param_count: u32 = @intCast(f.params.len + slot_offset);

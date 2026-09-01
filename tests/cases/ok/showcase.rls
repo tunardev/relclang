@@ -1,0 +1,59 @@
+# every layer of the language in one program
+
+struct Point {
+    x: Int
+    y: Int
+}
+
+enum Result<T, E> {
+    Ok(T)
+    Err(E)
+}
+
+trait Show {
+    fn show(self) -> Str
+}
+
+impl Show for Point {
+    fn show(self) -> Str {
+        "a point"
+    }
+}
+
+fn magnitude2(p: &Point) -> Int {
+    p.x * p.x + p.y * p.y
+}
+
+fn checked(p: &Point) -> Result<Int, Str> {
+    if p.x == 0 and p.y == 0 {
+        Err("origin has no direction")
+    } else {
+        Ok(magnitude2(p))
+    }
+}
+
+fn doubled(p: &Point) -> Result<Int, Str> {
+    let m = checked(p)?
+    Ok(m * 2)
+}
+
+fn describe<T: Show>(value: &T) -> Str {
+    value.show()
+}
+
+fn report(p: &Point) -> Int {
+    match doubled(p) {
+        Ok(v) => v
+        Err(e) => 0
+    }
+}
+
+fn main() {
+    let p = Point { x: 3, y: 4 }
+    let origin = Point { x: 0, y: 0 }
+
+    println(describe(&p))
+    println(magnitude2(&p))
+    println(report(&p))
+    println(report(&origin))
+}

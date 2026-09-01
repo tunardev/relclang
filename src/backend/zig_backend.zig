@@ -66,6 +66,14 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         try emitType(w, program, f.ret);
         try w.writeAll(" {\n");
         var lbl: u32 = 0;
+
+        for (0..f.param_count) |i| {
+            if (f.locals[i].used) continue;
+            try w.writeAll("    _ = ");
+            try emitLocalName(w, f, @intCast(i));
+            try w.writeAll(";\n");
+        }
+
         try emitBlockBody(w, program, f, &lbl, f.body, 1);
         if (f.body.result) |result| {
             try w.writeAll("    return ");
