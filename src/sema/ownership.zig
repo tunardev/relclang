@@ -231,25 +231,51 @@ const Checker = struct {
                 }
             },
 
+            .field, .index, .deref => try c.consumePlace(expr, expr),
+
+            else => try c.read(expr),
+        }
+    }
+
+    fn consumePlace(c: *Checker, place: tir.Expr, whole: tir.Expr) Error!void {
+        switch (place) {
             .field => |f| {
-                if (types.isCopy(f.ty)) {
-                    try c.read(f.base.*);
-                } else {
-                    try c.consume(f.base.*);
-                }
+                if (types.isCopy(f.ty)) return c.read(f.base.*);
+                try c.consumePlace(f.base.*, whole);
             },
 
             .index => |x| {
                 try c.read(x.index.*);
-                if (types.isCopy(x.ty)) {
-                    try c.read(x.base.*);
-                } else {
-                    try c.consume(x.base.*);
+                if (types.isCopy(x.ty)) return c.read(x.base.*);
+                if (c.owns(whole.typeOf())) {
+                    return c.rejectMove(whole, "an array", "the array still owns this element", "borrow it with `&` instead");
                 }
+                try c.consumePlace(x.base.*, whole);
             },
 
-            else => try c.read(expr),
+            .deref => |d| {
+                if (c.owns(whole.typeOf())) {
+                    return c.rejectMove(whole, "a reference", "only borrowed here", "the owner frees it, so copy the value or take the owner itself");
+                }
+                try c.read(d.operand.*);
+            },
+
+            else => try c.consume(place),
         }
+    }
+
+    fn owns(c: *Checker, ty: types.Type) bool {
+        return types.needsDrop(ty, .{ .structs = c.structs, .enums = c.enums });
+    }
+
+    fn rejectMove(c: *Checker, whole: tir.Expr, out_of: []const u8, label: []const u8, help: []const u8) Error!void {
+        try c.diags.err(
+            .cannot_move,
+            whole.spanOf(),
+            try c.diags.fmt("cannot move a `{s}` out of {s}", .{ try c.tyName(whole.typeOf()), out_of }),
+            label,
+            help,
+        );
     }
 
     fn snapshot(c: *Checker) Error![]State {

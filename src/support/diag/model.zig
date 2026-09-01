@@ -41,6 +41,7 @@ pub const Code = enum {
     missing_impl,
     escaping_reference,
     reference_field,
+    cannot_move,
 
     pub fn id(c: Code) []const u8 {
         return switch (c) {
@@ -81,6 +82,7 @@ pub const Code = enum {
             .missing_impl => "E0035",
             .escaping_reference => "E0036",
             .reference_field => "E0037",
+            .cannot_move => "E0038",
         };
     }
 };

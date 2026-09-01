@@ -764,3 +764,82 @@ test "a binding that may point at a local cannot be returned" {
     defer d.deinit();
     try testing.expect(has(d, .escaping_reference));
 }
+
+const bag =
+    \\struct Bag {
+    \\    items: Vec<Int>
+    \\}
+    \\
+    \\fn consume(v: Vec<Int>) {
+    \\    println(v.len())
+    \\}
+    \\
+;
+
+test "moving an owning field out of a reference reports E0038" {
+    var d = try checkText(testing.allocator, bag ++
+        \\fn steal(b: &Bag) {
+        \\    consume(b.items)
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let items: Vec<Int> = Vec.new(alloc)
+        \\    let b = Bag { items: items }
+        \\    steal(&b)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .cannot_move));
+}
+
+test "binding an owning field of a reference reports E0038" {
+    var d = try checkText(testing.allocator, bag ++
+        \\fn steal(b: &Bag) {
+        \\    let v = b.items
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let items: Vec<Int> = Vec.new(alloc)
+        \\    let b = Bag { items: items }
+        \\    steal(&b)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .cannot_move));
+}
+
+test "moving an owning element out of an array reports E0038" {
+    var d = try checkText(testing.allocator, bag ++
+        \\fn main(alloc: Allocator) {
+        \\    let a: Vec<Int> = Vec.new(alloc)
+        \\    let b: Vec<Int> = Vec.new(alloc)
+        \\    let arr = [a, b]
+        \\    consume(arr[0])
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .cannot_move));
+}
+
+test "copying a plain struct out of a reference is allowed" {
+    var d = try checkText(testing.allocator,
+        \\struct P {
+        \\    x: Int
+        \\}
+        \\struct Line {
+        \\    a: P
+        \\}
+        \\fn first(l: &Line) -> P {
+        \\    l.a
+        \\}
+        \\fn main() {
+        \\    let l = Line { a: P { x: 4 } }
+        \\    let p = first(&l)
+        \\    println(p.x)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}
