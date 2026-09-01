@@ -67,17 +67,25 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
         },
 
         .call_builtin => |c| switch (c.builtin) {
+            .read_line => {
+                try w.writeAll("(try rt.readLine(");
+                try emitExpr(w, program, f, lbl, c.args[0]);
+                try w.writeAll("))");
+            },
             .print_line => {
+                const arg_ty = if (c.args.len == 1) c.args[0].typeOf() else types.Type.void;
+                const is_string = arg_ty == .string or (arg_ty == .ref and arg_ty.ref.target.* == .string);
                 const fn_name = if (c.args.len != 1)
                     "printLine"
-                else switch (c.args[0].typeOf()) {
+                else switch (arg_ty) {
                     .int => "printLineInt",
                     .bool => "printLineBool",
-                    else => "printLine",
+                    else => if (is_string) "printLineString" else "printLine",
                 };
                 try w.print("(try rt.{s}(", .{fn_name});
                 for (c.args, 0..) |arg, i| {
                     if (i > 0) try w.writeAll(", ");
+                    if (is_string and arg.typeOf() != .ref) try w.writeAll("&");
                     try emitExpr(w, program, f, lbl, arg);
                 }
                 try w.writeAll("))");
@@ -166,15 +174,28 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
                     try emitExpr(w, program, f, lbl, v.args[0]);
                     try w.writeAll(")");
                 },
-                .len => {
+                .len, .str_len => {
                     try w.writeAll("(");
                     try emitReceiver(w, program, f, lbl, v.args[0]);
                     try w.writeAll(").len()");
                 },
-                .get => {
+                .str_new => {
+                    try w.writeAll("rt.String.init(");
+                    try emitExpr(w, program, f, lbl, v.args[0]);
+                    try w.writeAll(")");
+                },
+                .str_push, .str_push_int => {
                     try w.writeAll("(try (");
                     try emitReceiver(w, program, f, lbl, v.args[0]);
-                    try w.writeAll(").get(");
+                    try w.print(").{s}(", .{if (v.op == .str_push) "push" else "pushInt"});
+                    try emitExpr(w, program, f, lbl, v.args[1]);
+                    try w.writeAll("))");
+                },
+                .get => {
+                    const by_ref = v.ty == .ref;
+                    try w.writeAll("(try (");
+                    try emitReceiver(w, program, f, lbl, v.args[0]);
+                    try w.print(").{s}(", .{if (by_ref) "ref" else "get"});
                     try emitExpr(w, program, f, lbl, v.args[1]);
                     try w.writeAll("))");
                 },

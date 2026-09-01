@@ -36,6 +36,7 @@ pub const Fn = struct {
     ret_ty: Type,
     type_args: []const Type,
     expected: ?Type,
+    temps: std.ArrayList(tir.Stmt),
     bindings: std.ArrayList(Binding),
     locals: std.ArrayList(tir.Local),
     depth: u32,
@@ -47,6 +48,35 @@ pub const Fn = struct {
 
     pub fn deinit(f: *Fn) void {
         f.bindings.deinit(f.gpa);
+        f.temps.deinit(f.gpa);
+    }
+
+    pub fn hoistOwning(f: *Fn, value: tir.Expr) Error!tir.Expr {
+        const ty = value.typeOf();
+        if (!types.needsDrop(ty, f.symbols.registry())) return value;
+
+        switch (value) {
+            .local_ref, .field, .index, .deref, .borrow => return value,
+            else => {},
+        }
+
+        const slot: u32 = @intCast(f.locals.items.len);
+        try f.locals.append(f.arena, .{
+            .name = "tmp",
+            .ty = ty,
+            .used = true,
+            .is_mut = false,
+            .assigned = false,
+        });
+
+        try f.temps.append(f.gpa, .{ .let = .{
+            .slot = slot,
+            .init = value,
+            .ty = ty,
+            .span = value.spanOf(),
+        } });
+
+        return .{ .local_ref = .{ .slot = slot, .ty = ty, .span = value.spanOf() } };
     }
 
     pub fn lookup(f: *Fn, name: []const u8) ?Binding {

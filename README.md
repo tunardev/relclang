@@ -139,78 +139,30 @@ Run `relc emit-zig` on any file to see this for yourself.
 
 ## Speed
 
-Relastic compiles through Zig, so the question is whether that costs
-anything. It does not.
+Relastic compiles through Zig, and that costs nothing at run time. The
+same work written in Relastic, Zig and C runs at the same speed, and on
+an allocation heavy test the Relastic binary and its memory use match
+hand written Zig exactly.
 
-Two workloads, each written three times and built for release. The first
-is pure arithmetic, the second builds a two million element list, so it
-also shows what the allocator costs.
+Compiling is quick on the Relastic side. Almost all of a build is Zig.
 
-Collatz, no allocation:
-
-| target   | time  | binary | peak memory |
-|----------|-------|--------|-------------|
-| Relastic | 42 ms | 344 KB | 1536 KB |
-| Zig      | 42 ms | 327 KB | 1504 KB |
-| C        | 42 ms |  32 KB | 1344 KB |
-
-Sieve of Eratosthenes, two million entries:
-
-| target   | time  | binary | peak memory |
-|----------|-------|--------|-------------|
-| Relastic | 13 ms | 344 KB | 19312 KB |
-| Zig      | 12 ms | 344 KB | 19312 KB |
-| C        | 12 ms |  32 KB | 17008 KB |
-
-Speed is the same everywhere. On the allocating test the Relastic binary
-and its memory use match hand written Zig exactly, because a `Vec<Int>`
-is a Zig `ArrayList(i64)` and nothing is added on top. C is smaller
-because it does not carry Zig's standard library, and it uses less
-memory because a plain array does not leave room to grow.
-
-Generic code is compiled once per type and trait calls are direct, so
-there is nothing left at run time for the optimiser to trip over.
-Run `bench/run.sh` to reproduce all of it.
-
-Compiling is fast on the Relastic side and slow on the Zig side:
-
-| stage                        | time    | share |
-|------------------------------|---------|-------|
-| Relastic front end + codegen | 6 ms    | 0.4%  |
-| `zig build-exe`              | 1594 ms | 99.6% |
-
-The front end handles about 1.7 million lines a second and scales
-linearly. Startup is 3.7 ms, so small files feel instant. Almost all of
-a build is Zig, which is the price of using it as the backend.
+Full numbers, including binary sizes and memory, are in
+[bench/RESULTS.md](bench/RESULTS.md). Run `bench/run.sh` to reproduce
+them.
 
 ## Status
 
 This is an experiment, and it is honest about its size.
 
 Working: functions, generics, traits, structs, enums, pattern matching,
-fixed size arrays, ownership, borrow checking, `if`, `while`, and clear
-error messages.
+fixed size arrays, ownership, borrow checking, `if`, `while`, growable
+`Vec` and `String`, reading a line of input, and clear error messages.
 
-Memory is allocated explicitly. `main` can ask for an allocator, and
-`Vec<T>` grows at run time:
+Memory is freed for you. A value that owns memory is released when its
+scope ends, or by whoever you hand it to. The compiler decides which,
+so nothing is freed twice and you never write the free yourself.
 
-    fn main(alloc: Allocator) {
-        let v: Vec<Int> = Vec.new(alloc)
-        v.push(1)
-        v.push(2)
-        println(v.len())
-    }
-
-A `Vec` frees itself when its scope ends. If you pass it to a function
-the function owns it, and frees it instead. The compiler works out which
-of the two happens, so nothing is freed twice and you never write the
-free yourself.
-
-Missing: `Vec` elements have to be copied types, so `Vec<Int>` and
-`Vec<Str>` work but `Vec<Point>` does not yet. Structs and enums cannot
-hold a `Vec`, because nested cleanup is not implemented. There is no
-growable string, no way to read input, and no modules, so a program is a
-single file.
+A program is a single file for now.
 
 ## Design
 

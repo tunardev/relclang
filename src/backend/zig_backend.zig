@@ -22,6 +22,8 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
     try w.writeAll("const std = @import(\"std\");\n");
     try w.print("const rt = @import(\"{s}\");\n\n", .{runtime.file_name});
 
+    const reg: types.Registry = .{ .structs = program.structs, .enums = program.enums };
+
     for (program.enums, 0..) |def, index| {
         try w.print("const E{d}_{s} = union(enum) {{\n", .{ index, def.name });
         for (def.variants, 0..) |variant, vi| {
@@ -39,6 +41,28 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
             }
             try w.writeAll(",\n");
         }
+        if (types.needsDrop(.{ .enumeration = @intCast(index) }, reg)) {
+            try w.print("    pub fn deinit(self: *E{d}_{s}) void {{\n", .{ index, def.name });
+            try w.writeAll("        switch (self.*) {\n");
+            for (def.variants, 0..) |variant, vi| {
+                var owns = false;
+                for (variant.payload) |p| {
+                    if (types.needsDrop(p, reg)) owns = true;
+                }
+                if (!owns) {
+                    try w.print("            .v{d}_{s} => {{}},\n", .{ vi, variant.name });
+                    continue;
+                }
+                try w.print("            .v{d}_{s} => |*payload| {{\n", .{ vi, variant.name });
+                for (variant.payload, 0..) |p, pi| {
+                    if (!types.needsDrop(p, reg)) continue;
+                    try w.print("                payload.f{d}.deinit();\n", .{pi});
+                }
+                try w.writeAll("            },\n");
+            }
+            try w.writeAll("        }\n    }\n");
+        }
+
         try w.writeAll("};\n\n");
     }
 
@@ -49,6 +73,16 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
             try emitType(w, program, field.ty);
             try w.writeAll(",\n");
         }
+
+        if (types.needsDrop(.{ .strukt = @intCast(index) }, reg)) {
+            try w.print("\n    pub fn deinit(self: *S{d}_{s}) void {{\n", .{ index, def.name });
+            for (def.fields, 0..) |field, i| {
+                if (!types.needsDrop(field.ty, reg)) continue;
+                try w.print("        self.f{d}_{s}.deinit();\n", .{ i, field.name });
+            }
+            try w.writeAll("    }\n");
+        }
+
         try w.writeAll("};\n\n");
     }
 
@@ -59,7 +93,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         try w.print("fn {s}{s}(", .{ prefix, f.name });
         for (0..f.param_count) |i| {
             if (i > 0) try w.writeAll(", ");
-            if (types.needsDrop(f.locals[i].ty)) {
+            if (types.needsDrop(f.locals[i].ty, reg)) {
                 try w.print("p{d}_{s}", .{ i, f.locals[i].name });
             } else {
                 try emitLocalName(w, f, @intCast(i));
@@ -73,7 +107,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         var lbl: u32 = 0;
 
         for (0..f.param_count) |i| {
-            if (!types.needsDrop(f.locals[i].ty)) continue;
+            if (!types.needsDrop(f.locals[i].ty, reg)) continue;
             try w.writeAll("    var ");
             try emitLocalName(w, f, @intCast(i));
             try w.print(" = p{d}_{s};\n", .{ i, f.locals[i].name });
@@ -85,7 +119,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         }
 
         for (0..f.param_count) |i| {
-            if (types.needsDrop(f.locals[i].ty)) continue;
+            if (types.needsDrop(f.locals[i].ty, reg)) continue;
             if (f.locals[i].used) continue;
             try w.writeAll("    _ = ");
             try emitLocalName(w, f, @intCast(i));

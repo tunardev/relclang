@@ -443,33 +443,65 @@ test "borrowing a vec does not move it" {
     try testing.expect(!d.hasErrors());
 }
 
-test "a vec element must be copied" {
+test "a vec can hold a struct" {
     var d = try checkText(testing.allocator,
         \\struct P {
         \\    x: Int
         \\}
         \\fn main(alloc: Allocator) {
         \\    let v: Vec<P> = Vec.new(alloc)
+        \\    v.push(P { x: 1 })
         \\    println(v.len())
         \\}
         \\
     );
     defer d.deinit();
-    try testing.expect(has(d, .type_mismatch));
+    try testing.expect(!d.hasErrors());
 }
 
-test "a struct cannot hold a vec" {
+test "a struct can hold a vec" {
     var d = try checkText(testing.allocator,
         \\struct Bag {
         \\    items: Vec<Int>
         \\}
         \\fn main(alloc: Allocator) {
-        \\    println(1)
+        \\    let b = Bag { items: Vec.new(alloc) }
+        \\    b.items.push(1)
+        \\    println(b.items.len())
         \\}
         \\
     );
     defer d.deinit();
-    try testing.expect(has(d, .unsupported_drop));
+    try testing.expect(!d.hasErrors());
+}
+
+test "pushing a vec into a vec moves it" {
+    var d = try checkText(testing.allocator,
+        \\fn main(alloc: Allocator) {
+        \\    let inner: Vec<Int> = Vec.new(alloc)
+        \\    let rows: Vec<Vec<Int>> = Vec.new(alloc)
+        \\    rows.push(inner)
+        \\    println(inner.len())
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .use_after_move));
+}
+
+test "a string builds and prints without moving" {
+    var d = try checkText(testing.allocator,
+        \\fn main(alloc: Allocator) {
+        \\    let s: String = String.new(alloc)
+        \\    s.push("n = ")
+        \\    s.push_int(7)
+        \\    println(s)
+        \\    println(s.len())
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
 }
 
 test "an unannotated vec cannot be inferred" {

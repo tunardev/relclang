@@ -144,7 +144,7 @@ const Checker = struct {
                 try c.read(b.rhs.*);
             },
 
-            .call_builtin => |call| for (call.args) |arg| try c.consume(arg),
+            .call_builtin => |call| for (call.args) |arg| try c.read(arg),
             .call_function => |call| for (call.args) |arg| try c.consume(arg),
             .struct_lit => |lit| for (lit.fields) |value| try c.consume(value),
             .enum_lit => |lit| for (lit.payload) |value| try c.consume(value),
@@ -156,7 +156,17 @@ const Checker = struct {
 
             .deref => |d| try c.read(d.operand.*),
             .try_unwrap => |t| try c.consume(t.operand.*),
-            .vec_op => |v| for (v.args) |arg| try c.read(arg),
+            .vec_op => |v| switch (v.op) {
+                .push, .str_push, .str_push_int => {
+                    try c.read(v.args[0]);
+                    if (v.args.len > 1) try c.consume(v.args[1]);
+                },
+                .set => {
+                    for (v.args[0..@min(2, v.args.len)]) |arg| try c.read(arg);
+                    if (v.args.len > 2) try c.consume(v.args[2]);
+                },
+                else => for (v.args) |arg| try c.read(arg),
+            },
 
             .borrow => |b| {
                 try c.read(b.operand.*);

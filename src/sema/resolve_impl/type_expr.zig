@@ -41,18 +41,6 @@ pub fn resolveTypeIn(
                     return .invalid;
                 }
                 const elem = try resolveTypeIn(arena, table, n.args[0], type_params, diags);
-                if (!types.isCopy(elem) and !types.hasParam(elem)) {
-                    try diags.err(
-                        .type_mismatch,
-                        n.args[0].spanOf(),
-                        "a `Vec` element must be a copied type",
-                        try diags.fmt("`{s}` is moved rather than copied", .{
-                            try types.nameOf(arena, table.registry(), elem),
-                        }),
-                        "`Int`, `Bool`, `Str` and references can be stored",
-                    );
-                    return .invalid;
-                }
                 const ptr = try arena.create(types.Type);
                 ptr.* = elem;
                 return .{ .vec = .{ .elem = ptr } };

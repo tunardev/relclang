@@ -4,28 +4,34 @@ const ast = @import("../syntax/ast.zig");
 
 pub const Builtin = enum {
     println,
+    read_line,
 
     pub fn arity(b: Builtin) usize {
         return switch (b) {
             .println => 1,
+            .read_line => 1,
         };
     }
 
     pub fn resultType(b: Builtin) types.Type {
         return switch (b) {
             .println => .void,
+            .read_line => .string,
         };
     }
 
     pub fn accepts(b: Builtin, index: usize, ty: types.Type) bool {
         return switch (b) {
-            .println => index == 0 and (ty == .str or ty == .int or ty == .bool),
+            .println => index == 0 and (ty == .str or ty == .int or ty == .bool or
+                ty == .string or (ty == .ref and ty.ref.target.* == .string)),
+            .read_line => index == 0 and ty == .allocator,
         };
     }
 
     pub fn describeParam(b: Builtin, index: usize) []const u8 {
         return switch (b) {
-            .println => if (index == 0) "`Str`, `Int` or `Bool`" else "nothing",
+            .println => if (index == 0) "`Str`, `Int`, `Bool` or `String`" else "nothing",
+            .read_line => if (index == 0) "`Allocator`" else "nothing",
         };
     }
 };

@@ -40,7 +40,8 @@ pub fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
     var args: std.ArrayList(tir.Expr) = .empty;
     for (c.args, 0..) |arg, i| {
         const want: ?Type = if (i < declared.len) declared[i] else null;
-        try args.append(f.arena, try lowerWithExpected(f, arg, want));
+        const value = try lowerWithExpected(f, arg, want);
+        try args.append(f.arena, try f.hoistOwning(value));
     }
     const lowered = try args.toOwnedSlice(f.arena);
 
@@ -356,8 +357,14 @@ fn lowerVecMethod(f: *Fn, m: ast.MethodCall, receiver: tir.Expr, vec_ty: Type) E
         try args.append(f.arena, lowered);
     }
 
+    const owns = types.needsDrop(elem, f.symbols.registry());
+
     const result: Type = switch (spec.op) {
-        .get => elem,
+        .get => if (owns) blk: {
+            const ptr = try f.arena.create(Type);
+            ptr.* = elem;
+            break :blk .{ .ref = .{ .mutable = false, .target = ptr } };
+        } else elem,
         .len => .int,
         else => .void,
     };
@@ -370,11 +377,107 @@ fn lowerVecMethod(f: *Fn, m: ast.MethodCall, receiver: tir.Expr, vec_ty: Type) E
     } };
 }
 
+const STRING_METHODS = [_]struct { name: []const u8, op: tir.VecOp.Op, arity: usize, arg: Type, ret: Type }{
+    .{ .name = "push", .op = .str_push, .arity = 1, .arg = .str, .ret = .void },
+    .{ .name = "push_int", .op = .str_push_int, .arity = 1, .arg = .int, .ret = .void },
+    .{ .name = "len", .op = .str_len, .arity = 0, .arg = .void, .ret = .int },
+};
+
+fn lowerStringNew(f: *Fn, m: ast.MethodCall) Error!tir.Expr {
+    const bad: tir.Expr = .{ .vec_op = .{ .op = .str_new, .args = &.{}, .ty = .invalid, .span = m.span } };
+
+    if (m.args.len != 1) {
+        try f.diags.err(
+            .wrong_arg_count,
+            m.span,
+            "`String.new` takes an allocator",
+            try f.diags.fmt("expected 1, found {d}", .{m.args.len}),
+            null,
+        );
+        return bad;
+    }
+
+    const alloc = try lowerExpr(f, m.args[0]);
+    if (!alloc.typeOf().isInvalid() and alloc.typeOf() != .allocator) {
+        try f.diags.err(
+            .type_mismatch,
+            m.args[0].spanOf(),
+            "expected an allocator",
+            try f.diags.fmt("expected `Allocator`, found `{s}`", .{try f.tyName(alloc.typeOf())}),
+            null,
+        );
+    }
+
+    const args = try f.arena.alloc(tir.Expr, 1);
+    args[0] = alloc;
+    return .{ .vec_op = .{ .op = .str_new, .args = args, .ty = .string, .span = m.span } };
+}
+
+fn lowerStringMethod(f: *Fn, m: ast.MethodCall, receiver: tir.Expr) Error!tir.Expr {
+    const bad: tir.Expr = .{ .vec_op = .{ .op = .str_len, .args = &.{}, .ty = .invalid, .span = m.span } };
+
+    const spec = for (STRING_METHODS) |candidate| {
+        if (std.mem.eql(u8, candidate.name, m.name)) break candidate;
+    } else {
+        try f.diags.err(
+            .unknown_method,
+            m.name_span,
+            try f.diags.fmt("no method `{s}` on `String`", .{m.name}),
+            "not one of push, push_int or len",
+            null,
+        );
+        for (m.args) |arg| _ = try lowerExpr(f, arg);
+        return bad;
+    };
+
+    if (m.args.len != spec.arity) {
+        try f.diags.err(
+            .wrong_arg_count,
+            m.span,
+            try f.diags.fmt("`{s}` takes {d} {s}", .{
+                m.name,
+                spec.arity,
+                if (spec.arity == 1) "argument" else "arguments",
+            }),
+            try f.diags.fmt("expected {d}, found {d}", .{ spec.arity, m.args.len }),
+            null,
+        );
+        for (m.args) |arg| _ = try lowerExpr(f, arg);
+        return bad;
+    }
+
+    var args: std.ArrayList(tir.Expr) = .empty;
+    try args.append(f.arena, receiver);
+
+    for (m.args) |arg| {
+        const lowered = try lowerWithExpected(f, arg, spec.arg);
+        const got = lowered.typeOf();
+        if (!got.isInvalid() and !Type.eql(got, spec.arg)) {
+            try f.diags.err(
+                .type_mismatch,
+                arg.spanOf(),
+                "argument type mismatch",
+                try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(spec.arg), try f.tyName(got) }),
+                null,
+            );
+        }
+        try args.append(f.arena, lowered);
+    }
+
+    return .{ .vec_op = .{
+        .op = spec.op,
+        .args = try args.toOwnedSlice(f.arena),
+        .ty = spec.ret,
+        .span = m.span,
+    } };
+}
+
 pub fn lowerMethodCall(f: *Fn, m: ast.MethodCall) Error!tir.Expr {
     if (m.receiver.* == .var_ref) {
         const name = m.receiver.var_ref.name;
-        if (std.mem.eql(u8, name, "Vec") and f.lookup(name) == null) {
-            if (std.mem.eql(u8, m.name, "new")) return lowerVecNew(f, m);
+        if (f.lookup(name) == null and std.mem.eql(u8, m.name, "new")) {
+            if (std.mem.eql(u8, name, "Vec")) return lowerVecNew(f, m);
+            if (std.mem.eql(u8, name, "String")) return lowerStringNew(f, m);
         }
     }
 
@@ -384,6 +487,7 @@ pub fn lowerMethodCall(f: *Fn, m: ast.MethodCall) Error!tir.Expr {
         var probe = receiver.typeOf();
         while (probe == .ref) probe = probe.ref.target.*;
         if (probe == .vec) return lowerVecMethod(f, m, receiver, probe);
+        if (probe == .string) return lowerStringMethod(f, m, receiver);
     }
 
     var target = receiver.typeOf();

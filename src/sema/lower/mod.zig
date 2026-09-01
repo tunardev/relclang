@@ -90,6 +90,7 @@ pub fn lowerFunction(
             .ret_ty = .void,
             .type_args = type_args,
             .expected = null,
+            .temps = .empty,
             .bindings = .empty,
             .locals = .empty,
             .depth = 0,

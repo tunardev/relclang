@@ -1,0 +1,20 @@
+fn label(alloc: Allocator, n: Int) -> String {
+    let s: String = String.new(alloc)
+    s.push("item #")
+    s.push_int(n)
+    s
+}
+
+fn main(alloc: Allocator) {
+    let mut i = 1
+    while i <= 3 {
+        println(label(alloc, i))
+        i = i + 1
+    }
+
+    let report: String = String.new(alloc)
+    report.push("total: ")
+    report.push_int(3)
+    println(report)
+    println(report.len())
+}

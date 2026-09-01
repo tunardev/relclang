@@ -45,9 +45,11 @@ pub fn lowerStructLit(f: *Fn, s: ast.StructLit) Error!tir.Expr {
     }
 
     for (s.fields) |init_field| {
-        const value = try lowerExpr(f, init_field.value);
+        const maybe_slot = def.fieldIndex(init_field.name);
+        const expect: ?Type = if (maybe_slot) |slot| def.fields[slot].ty else null;
+        const value = try lowerWithExpected(f, init_field.value, expect);
 
-        const slot = def.fieldIndex(init_field.name) orelse {
+        const slot = maybe_slot orelse {
             try f.diags.err(
                 .unknown_field,
                 init_field.name_span,

@@ -105,7 +105,13 @@ pub fn lowerBlock(f: *Fn, block: ast.Block, wants_value: bool) Error!tir.Block {
     for (block.stmts, 0..) |stmt, i| {
         const is_last = i + 1 == last;
         f.expected = if (is_last and wants_value) outer_expected else null;
-        const lowered = try lowerStmt(f, stmt, is_last and wants_value) orelse continue;
+        const lowered = try lowerStmt(f, stmt, is_last and wants_value) orelse {
+            f.temps.clearRetainingCapacity();
+            continue;
+        };
+
+        for (f.temps.items) |temp| try stmts.append(f.arena, temp);
+        f.temps.clearRetainingCapacity();
 
         if (is_last and wants_value and lowered == .expr) {
             result = try f.box(lowered.expr);

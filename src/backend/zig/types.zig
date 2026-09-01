@@ -12,6 +12,7 @@ pub fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!v
     switch (ty) {
         .void, .invalid, .param => try w.writeAll("void"),
         .allocator => try w.writeAll("rt.Allocator"),
+        .string => try w.writeAll("rt.String"),
         .vec => |v| {
             try w.writeAll("rt.Vec(");
             try emitType(w, program, v.elem.*);

@@ -9,7 +9,11 @@ pub const Error = error{ OutOfMemory, WriteFailed };
 const emitExpr = @import("expr.zig").emitExpr;
 const emitLocalName = @import("expr.zig").emitLocalName;
 
-pub fn emitStmt(
+pub fn regOf(program: tir.Program) types.Registry {
+    return .{ .structs = program.structs, .enums = program.enums };
+}
+
+fn emitStmt(
     w: *std.Io.Writer,
     program: tir.Program,
     f: tir.Function,
@@ -42,13 +46,13 @@ pub fn emitStmt(
         },
         .let => |l| {
             try indent(w, level);
-            const needs_var = f.locals[l.slot].assigned or types.needsDrop(f.locals[l.slot].ty);
+            const needs_var = f.locals[l.slot].assigned or types.needsDrop(f.locals[l.slot].ty, regOf(program));
             try w.writeAll(if (needs_var) "var " else "const ");
             try emitLocalName(w, f, l.slot);
             try w.writeAll(" = ");
             try emitExpr(w, program, f, lbl, l.init);
             try w.writeAll(";\n");
-            if (types.needsDrop(f.locals[l.slot].ty) and !f.locals[l.slot].moved) {
+            if (types.needsDrop(f.locals[l.slot].ty, regOf(program)) and !f.locals[l.slot].moved) {
                 try indent(w, level);
                 try w.writeAll("defer ");
                 try emitLocalName(w, f, l.slot);

@@ -5,6 +5,7 @@ const Span = source.Span;
 
 pub const Builtin = enum {
     print_line,
+    read_line,
 };
 
 pub const BinOp = enum {
@@ -61,7 +62,7 @@ pub const VecOp = struct {
     ty: types.Type,
     span: Span,
 
-    pub const Op = enum { new, push, get, set, len };
+    pub const Op = enum { new, push, get, set, len, str_new, str_push, str_push_int, str_len };
 };
 
 pub const Deref = struct {

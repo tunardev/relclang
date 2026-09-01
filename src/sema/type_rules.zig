@@ -6,6 +6,7 @@ pub fn typeFromName(name: []const u8) ?types.Type {
     if (std.mem.eql(u8, name, "Int")) return .int;
     if (std.mem.eql(u8, name, "Bool")) return .bool;
     if (std.mem.eql(u8, name, "Allocator")) return .allocator;
+    if (std.mem.eql(u8, name, "String")) return .string;
     if (std.mem.eql(u8, name, "Str")) return .str;
     if (std.mem.eql(u8, name, "Void")) return .void;
     return null;

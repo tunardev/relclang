@@ -1,0 +1,32 @@
+struct Bag {
+    name: Str
+    items: Vec<Int>
+}
+
+fn sum(b: &Bag) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while i < b.items.len() {
+        total = total + b.items.get(i)
+        i = i + 1
+    }
+    total
+}
+
+fn main(alloc: Allocator) {
+    let b = Bag { name: "primes", items: Vec.new(alloc) }
+    b.items.push(2)
+    b.items.push(3)
+    b.items.push(5)
+
+    println(b.name)
+    println(sum(&b))
+
+    let rows: Vec<Vec<Int>> = Vec.new(alloc)
+    let first: Vec<Int> = Vec.new(alloc)
+    first.push(1)
+    first.push(2)
+    rows.push(first)
+    println(rows.get(0).len())
+    println(rows.get(0).get(1))
+}

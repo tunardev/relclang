@@ -141,18 +141,6 @@ pub fn run(
             for (variant.payload) |ty_expr| {
                 const payload_ty = try resolveTypeIn(arena, &table, ty_expr, decl.type_params, diags);
 
-                if (types.needsDrop(payload_ty)) {
-                    try diags.err(
-                        .unsupported_drop,
-                        ty_expr.spanOf(),
-                        try diags.fmt("an enum cannot hold `{s}`", .{
-                            try types.nameOf(arena, table.registry(), payload_ty),
-                        }),
-                        "this type frees memory when it goes out of scope",
-                        "keep it in a local binding and pass a reference instead",
-                    );
-                }
-
                 try payload.append(arena, payload_ty);
             }
             try variants.append(arena, .{
@@ -212,18 +200,6 @@ pub fn run(
                 }
             }
             const field_ty = try resolveTypeIn(arena, &table, field.ty, decl.type_params, diags);
-
-            if (types.needsDrop(field_ty)) {
-                try diags.err(
-                    .unsupported_drop,
-                    field.ty.spanOf(),
-                    try diags.fmt("a struct cannot hold `{s}`", .{
-                        try types.nameOf(arena, table.registry(), field_ty),
-                    }),
-                    "this type frees memory when it goes out of scope",
-                    "keep it in a local binding and pass a reference instead",
-                );
-            }
 
             try fields.append(arena, .{
                 .name = field.name,

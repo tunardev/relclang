@@ -404,5 +404,6 @@ pub fn unOpOf(op: ast.UnOp) tir.UnOp {
 pub fn builtinOf(b: resolve.Builtin) tir.Builtin {
     return switch (b) {
         .println => .print_line,
+        .read_line => .read_line,
     };
 }

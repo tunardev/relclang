@@ -12,6 +12,7 @@ pub const Type = union(enum) {
     ref: Ref,
     param: u32,
     allocator,
+    string,
     vec: Vec,
 
     pub const Array = struct {
@@ -41,6 +42,7 @@ pub const Type = union(enum) {
             .ref => |r| b == .ref and r.mutable == b.ref.mutable and eql(r.target.*, b.ref.target.*),
             .param => |i| b == .param and b.param == i,
             .allocator => b == .allocator,
+            .string => b == .string,
             .vec => |v| b == .vec and eql(v.elem.*, b.vec.elem.*),
         };
     }
@@ -106,9 +108,26 @@ pub fn hasParam(t: Type) bool {
     };
 }
 
-pub fn needsDrop(t: Type) bool {
+pub fn needsDrop(t: Type, reg: Registry) bool {
     return switch (t) {
-        .vec => true,
+        .vec, .string => true,
+        .array => |a| needsDrop(a.elem.*, reg),
+        .strukt => |i| blk: {
+            if (i >= reg.structs.len) break :blk false;
+            for (reg.structs[i].fields) |field| {
+                if (needsDrop(field.ty, reg)) break :blk true;
+            }
+            break :blk false;
+        },
+        .enumeration => |i| blk: {
+            if (i >= reg.enums.len) break :blk false;
+            for (reg.enums[i].variants) |variant| {
+                for (variant.payload) |payload| {
+                    if (needsDrop(payload, reg)) break :blk true;
+                }
+            }
+            break :blk false;
+        },
         else => false,
     };
 }
@@ -157,6 +176,7 @@ pub fn isCopy(t: Type) bool {
         .void, .bool, .int, .str, .invalid => true,
         .ref => true,
         .allocator => true,
+        .string => false,
         .vec => false,
         .param => false,
         .strukt, .enumeration => false,
@@ -179,6 +199,7 @@ pub fn nameOf(arena: std.mem.Allocator, reg: Registry, t: Type) ![]const u8 {
         }),
         .param => |i| std.fmt.allocPrint(arena, "T{d}", .{i}),
         .allocator => "Allocator",
+        .string => "String",
         .vec => |v| std.fmt.allocPrint(arena, "Vec<{s}>", .{try nameOf(arena, reg, v.elem.*)}),
         .ref => |r| std.fmt.allocPrint(arena, "&{s}{s}", .{
             if (r.mutable) "mut " else "",
