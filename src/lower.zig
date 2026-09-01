@@ -42,7 +42,7 @@ const Job = struct {
 const Mono = struct {
     arena: std.mem.Allocator,
     gpa: std.mem.Allocator,
-    symbols: *const resolve.SymbolTable,
+    symbols: *resolve.SymbolTable,
     diags: *diagnostics.Diagnostics,
     program: ast.Program,
     functions: std.ArrayList(tir.Function),
@@ -87,10 +87,11 @@ const Mono = struct {
 const Fn = struct {
     arena: std.mem.Allocator,
     gpa: std.mem.Allocator,
-    symbols: *const resolve.SymbolTable,
+    symbols: *resolve.SymbolTable,
     diags: *diagnostics.Diagnostics,
     mono: *Mono,
     type_args: []const Type,
+    expected: ?Type,
     bindings: std.ArrayList(Binding),
     locals: std.ArrayList(tir.Local),
     depth: u32,
@@ -152,7 +153,7 @@ pub fn run(
     arena: std.mem.Allocator,
     gpa: std.mem.Allocator,
     program: ast.Program,
-    symbols: *const resolve.SymbolTable,
+    symbols: *resolve.SymbolTable,
     diags: *diagnostics.Diagnostics,
 ) Error!tir.Program {
     const ast_to_tir = try arena.alloc(?usize, program.fns.len);
@@ -192,8 +193,8 @@ pub fn run(
 
     return .{
         .functions = try mono.functions.toOwnedSlice(arena),
-        .structs = symbols.structs,
-        .enums = symbols.enums,
+        .structs = symbols.structs.items,
+        .enums = symbols.enums.items,
     };
 }
 
@@ -219,6 +220,7 @@ fn lowerFunction(
             .diags = diags,
             .mono = mono,
             .type_args = type_args,
+            .expected = null,
             .bindings = .empty,
             .locals = .empty,
             .depth = 0,
@@ -300,7 +302,7 @@ fn instanceName(
     arena: std.mem.Allocator,
     name: []const u8,
     args: []const Type,
-    symbols: *const resolve.SymbolTable,
+    symbols: *resolve.SymbolTable,
 ) Error![]const u8 {
     if (args.len == 0) return name;
 
@@ -518,12 +520,13 @@ fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {
         },
         .assign => |a| return lowerAssign(f, a),
         .let => |l| {
-            const init_expr = try lowerExpr(f, l.init);
+            var annotation: ?Type = null;
+            if (l.ty) |ty_expr| annotation = try f.subst(try resolveLocalType(f, ty_expr));
+
+            const init_expr = try lowerWithExpected(f, l.init, annotation);
             var ty = init_expr.typeOf();
 
-            if (l.ty) |ty_expr| {
-                const annotated = try f.subst(try resolveLocalType(f, ty_expr));
-
+            if (annotation) |annotated| {
                 if (!annotated.isInvalid() and !ty.isInvalid() and !Type.eql(annotated, ty)) {
                     try f.diags.err(
                         .type_mismatch,
@@ -588,39 +591,14 @@ fn autoDeref(f: *Fn, e: tir.Expr) Error!tir.Expr {
 }
 
 fn resolveLocalType(f: *Fn, expr: ast.TypeExpr) Error!Type {
-    switch (expr) {
-        .named => |n| {
-            if (typecheck.typeFromName(n.name)) |primitive| return primitive;
-            if (f.symbols.structIndex(n.name)) |index| return .{ .strukt = index };
-            try f.diags.err(
-                .unknown_struct,
-                n.span,
-                try f.diags.fmt("unknown type `{s}`", .{n.name}),
-                "not a known type",
-                "the built in types are `Int`, `Bool`, `Str` and `Void`",
-            );
-            return .invalid;
-        },
-        .ref => |r| {
-            const target = try resolveLocalType(f, r.target.*);
-            const ptr = try f.arena.create(Type);
-            ptr.* = target;
-            return .{ .ref = .{ .mutable = r.mutable, .target = ptr } };
-        },
-        .array => |a| {
-            const elem = try resolveLocalType(f, a.elem.*);
-            const len = std.fmt.parseInt(u64, a.len_text, 10) catch {
-                try f.diags.err(.integer_overflow, a.len_span, "array length is out of range", "not a valid length", null);
-                return .invalid;
-            };
-            const ptr = try f.arena.create(Type);
-            ptr.* = elem;
-            return .{ .array = .{ .elem = ptr, .len = len } };
-        },
-    }
+    return resolve.resolveType(f.arena, f.symbols, expr, f.diags) catch error.OutOfMemory;
 }
 
 fn lowerStructLit(f: *Fn, s: ast.StructLit) Error!tir.Expr {
+    if (f.symbols.templateIndex(s.name)) |tpl_index| {
+        return lowerGenericStructLit(f, s, tpl_index);
+    }
+
     const index = f.symbols.structIndex(s.name) orelse {
         try f.diags.err(
             .unknown_struct,
@@ -633,7 +611,7 @@ fn lowerStructLit(f: *Fn, s: ast.StructLit) Error!tir.Expr {
         return .{ .struct_lit = .{ .strukt = 0, .fields = &.{}, .ty = .invalid, .span = s.span } };
     };
 
-    const def = f.symbols.structs[index];
+    const def = f.symbols.structs.items[index];
     const slots = try f.arena.alloc(tir.Expr, def.fields.len);
     const filled = try f.gpa.alloc(bool, def.fields.len);
     defer f.gpa.free(filled);
@@ -646,6 +624,122 @@ fn lowerStructLit(f: *Fn, s: ast.StructLit) Error!tir.Expr {
     for (s.fields) |init_field| {
         const value = try lowerExpr(f, init_field.value);
 
+        const slot = def.fieldIndex(init_field.name) orelse {
+            try f.diags.err(
+                .unknown_field,
+                init_field.name_span,
+                try f.diags.fmt("`{s}` has no field `{s}`", .{ def.name, init_field.name }),
+                "unknown field",
+                null,
+            );
+            continue;
+        };
+
+        if (filled[slot]) {
+            try f.diags.err(
+                .duplicate_binding,
+                init_field.name_span,
+                try f.diags.fmt("field `{s}` is set twice", .{init_field.name}),
+                "duplicate field",
+                null,
+            );
+        }
+        filled[slot] = true;
+
+        const want = def.fields[slot].ty;
+        const got = value.typeOf();
+        if (!got.isInvalid() and !Type.eql(want, got)) {
+            try f.diags.err(
+                .type_mismatch,
+                init_field.value.spanOf(),
+                "field type mismatch",
+                try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(want), try f.tyName(got) }),
+                null,
+            );
+        }
+
+        slots[slot] = value;
+    }
+
+    for (def.fields, 0..) |field, i| {
+        if (!filled[i]) {
+            try f.diags.err(
+                .missing_field,
+                s.span,
+                try f.diags.fmt("missing field `{s}` in `{s}`", .{ field.name, def.name }),
+                "this field is never set",
+                null,
+            );
+        }
+    }
+
+    return .{ .struct_lit = .{
+        .strukt = index,
+        .fields = slots,
+        .ty = .{ .strukt = index },
+        .span = s.span,
+    } };
+}
+
+fn lowerGenericStructLit(f: *Fn, s: ast.StructLit, tpl_index: u32) Error!tir.Expr {
+    const tpl = f.symbols.templates.items[tpl_index];
+    const template_def = tpl.struct_def.?;
+
+    const bound = try f.gpa.alloc(?Type, tpl.type_param_count);
+    defer f.gpa.free(bound);
+    @memset(bound, null);
+
+    var values: std.ArrayList(tir.Expr) = .empty;
+    for (s.fields) |init_field| {
+        const value = try lowerExpr(f, init_field.value);
+        try values.append(f.arena, value);
+
+        if (template_def.fieldIndex(init_field.name)) |slot| {
+            const actual = value.typeOf();
+            if (!actual.isInvalid()) _ = types.unify(template_def.fields[slot].ty, actual, bound);
+        }
+    }
+
+    if (f.expected) |want| {
+        if (want == .strukt) {
+            for (f.symbols.instances.items) |inst| {
+                if (inst.template != tpl_index or inst.index != want.strukt) continue;
+                for (inst.args, 0..) |a, i| {
+                    if (i < bound.len and bound[i] == null) bound[i] = a;
+                }
+                break;
+            }
+        }
+    }
+
+    const resolved = try f.arena.alloc(Type, tpl.type_param_count);
+    for (bound, 0..) |b, i| {
+        resolved[i] = b orelse {
+            try f.diags.err(
+                .cannot_infer,
+                s.span,
+                try f.diags.fmt("cannot infer the type parameters of `{s}`", .{tpl.name}),
+                "no field determines them",
+                "annotate the binding with the full type",
+            );
+            return .{ .struct_lit = .{ .strukt = 0, .fields = &.{}, .ty = .invalid, .span = s.span } };
+        };
+    }
+
+    const instance = f.symbols.instantiate(tpl_index, resolved) catch return error.OutOfMemory;
+    const index = instance.strukt;
+    const def = f.symbols.structs.items[index];
+
+    const slots = try f.arena.alloc(tir.Expr, def.fields.len);
+    const filled = try f.gpa.alloc(bool, def.fields.len);
+    defer f.gpa.free(filled);
+    @memset(filled, false);
+
+    for (def.fields, 0..) |field, i| {
+        slots[i] = .{ .int_const = .{ .value = 0, .ty = field.ty, .span = s.span } };
+    }
+
+    for (s.fields, values.items) |init_field, value| {
         const slot = def.fieldIndex(init_field.name) orelse {
             try f.diags.err(
                 .unknown_field,
@@ -897,7 +991,7 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
             }
 
             const index = base_ty.strukt;
-            const def = f.symbols.structs[index];
+            const def = f.symbols.structs.items[index];
 
             const slot = def.fieldIndex(fa.field) orelse {
                 try f.diags.err(
@@ -1037,7 +1131,7 @@ fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
     }
 
     const enum_index = scrut_ty.enumeration;
-    const def = f.symbols.enums[enum_index];
+    const def = f.symbols.enums.items[enum_index];
 
     const covered = try f.gpa.alloc(bool, def.variants.len);
     defer f.gpa.free(covered);
@@ -1181,12 +1275,68 @@ fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
 
 fn lowerEnumLit(
     f: *Fn,
-    ref: resolve.VariantRef,
+    ref_in: resolve.VariantRef,
     args: []const tir.Expr,
     arg_spans: []const source.Span,
     span: Span,
 ) Error!tir.Expr {
-    const def = f.symbols.enums[ref.enumeration];
+    var ref = ref_in;
+
+    if (ref.from_template) {
+        const tpl = f.symbols.templates.items[ref.enumeration];
+        const template_def = tpl.enum_def.?;
+        const declared = template_def.variants[ref.variant].payload;
+
+        const bound = try f.gpa.alloc(?Type, tpl.type_param_count);
+        defer f.gpa.free(bound);
+        @memset(bound, null);
+
+        if (declared.len == args.len) {
+            for (declared, args) |want, arg| {
+                const actual = arg.typeOf();
+                if (actual.isInvalid()) continue;
+                _ = types.unify(want, actual, bound);
+            }
+        }
+
+        if (f.expected) |want| {
+            if (want == .enumeration) {
+                for (f.symbols.instances.items) |inst| {
+                    if (inst.template != ref.enumeration) continue;
+                    if (inst.index != want.enumeration) continue;
+                    for (inst.args, 0..) |a, i| {
+                        if (i < bound.len and bound[i] == null) bound[i] = a;
+                    }
+                    break;
+                }
+            }
+        }
+
+        const resolved = try f.arena.alloc(Type, tpl.type_param_count);
+        for (bound, 0..) |b, i| {
+            resolved[i] = b orelse {
+                try f.diags.err(
+                    .cannot_infer,
+                    span,
+                    try f.diags.fmt("cannot infer the type parameters of `{s}`", .{tpl.name}),
+                    "no argument determines them",
+                    "annotate the binding, as in `let x: Option<Int> = None`",
+                );
+                return .{ .enum_lit = .{
+                    .enumeration = 0,
+                    .variant = ref.variant,
+                    .payload = args,
+                    .ty = .invalid,
+                    .span = span,
+                } };
+            };
+        }
+
+        const instance = f.symbols.instantiate(ref.enumeration, resolved) catch return error.OutOfMemory;
+        ref = .{ .enumeration = instance.enumeration, .variant = ref.variant, .from_template = false };
+    }
+
+    const def = f.symbols.enums.items[ref.enumeration];
     const variant = def.variants[ref.variant];
 
     if (args.len != variant.payload.len) {
@@ -1228,9 +1378,35 @@ fn lowerEnumLit(
     } };
 }
 
+fn lowerWithExpected(f: *Fn, expr: ast.Expr, expected: ?Type) Error!tir.Expr {
+    const saved = f.expected;
+    f.expected = expected;
+    defer f.expected = saved;
+    return lowerExpr(f, expr);
+}
+
 fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
+    var declared: []const Type = &.{};
+    if (f.symbols.lookup(c.callee)) |sym| {
+        switch (sym) {
+            .function => |target| {
+                const raw = f.symbols.signature(target);
+                if (!raw.isGeneric()) declared = raw.params;
+            },
+            .variant => |ref| {
+                if (!ref.from_template) {
+                    declared = f.symbols.enums.items[ref.enumeration].variants[ref.variant].payload;
+                }
+            },
+            else => {},
+        }
+    }
+
     var args: std.ArrayList(tir.Expr) = .empty;
-    for (c.args) |arg| try args.append(f.arena, try lowerExpr(f, arg));
+    for (c.args, 0..) |arg, i| {
+        const want: ?Type = if (i < declared.len) declared[i] else null;
+        try args.append(f.arena, try lowerWithExpected(f, arg, want));
+    }
     const lowered = try args.toOwnedSlice(f.arena);
 
     const symbol = f.symbols.lookup(c.callee) orelse {

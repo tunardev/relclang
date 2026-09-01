@@ -1,0 +1,44 @@
+enum Option<T> {
+    Some(T)
+    None
+}
+
+struct Pair<T> {
+    a: T
+    b: T
+}
+
+fn unwrap_or(o: Option<Int>, fallback: Int) -> Int {
+    match o {
+        Some(v) => v
+        None => fallback
+    }
+}
+
+fn describe(o: Option<Str>) -> Str {
+    match o {
+        Some(s) => s
+        None => "nothing"
+    }
+}
+
+fn first(p: &Pair<Int>) -> Int {
+    p.a
+}
+
+fn swap(p: Pair<Str>) -> Pair<Str> {
+    Pair { a: p.b, b: p.a }
+}
+
+fn main() {
+    println(unwrap_or(Some(42), 0))
+    println(unwrap_or(None, 7))
+    println(describe(Some("here")))
+    println(describe(None))
+
+    let p = Pair { a: 1, b: 2 }
+    println(first(&p))
+
+    let q = Pair { a: "x", b: "y" }
+    println(swap(q).a)
+}
