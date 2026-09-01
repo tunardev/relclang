@@ -55,6 +55,15 @@ pub const BorrowExpr = struct {
     span: Span,
 };
 
+pub const VecOp = struct {
+    op: Op,
+    args: []const Expr,
+    ty: types.Type,
+    span: Span,
+
+    pub const Op = enum { new, push, get, set, len };
+};
+
 pub const Deref = struct {
     operand: *const Expr,
     ty: types.Type,
@@ -179,6 +188,7 @@ pub const Expr = union(enum) {
     borrow: BorrowExpr,
     deref: Deref,
     try_unwrap: TryUnwrap,
+    vec_op: VecOp,
 
     pub fn typeOf(e: Expr) types.Type {
         return switch (e) {
@@ -201,6 +211,7 @@ pub const Expr = union(enum) {
             .borrow => |b| b.ty,
             .deref => |d| d.ty,
             .try_unwrap => |t| t.ty,
+            .vec_op => |v| v.ty,
         };
     }
 
@@ -225,6 +236,7 @@ pub const Expr = union(enum) {
             .borrow => |b| b.span,
             .deref => |d| d.span,
             .try_unwrap => |t| t.span,
+            .vec_op => |v| v.span,
         };
     }
 };
@@ -270,6 +282,7 @@ pub const Local = struct {
     used: bool,
     is_mut: bool,
     assigned: bool,
+    moved: bool = false,
 };
 
 pub const Block = struct {
@@ -282,7 +295,7 @@ pub const Function = struct {
     is_entry: bool,
     param_count: u32,
     ret: types.Type,
-    locals: []const Local,
+    locals: []Local,
     body: Block,
     span: Span,
 };

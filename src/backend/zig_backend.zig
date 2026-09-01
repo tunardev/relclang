@@ -53,12 +53,17 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
     }
 
     var entry: ?[]const u8 = null;
+    var entry_takes_allocator = false;
 
     for (program.functions) |f| {
         try w.print("fn {s}{s}(", .{ prefix, f.name });
         for (0..f.param_count) |i| {
             if (i > 0) try w.writeAll(", ");
-            try emitLocalName(w, f, @intCast(i));
+            if (types.needsDrop(f.locals[i].ty)) {
+                try w.print("p{d}_{s}", .{ i, f.locals[i].name });
+            } else {
+                try emitLocalName(w, f, @intCast(i));
+            }
             try w.writeAll(": ");
             try emitType(w, program, f.locals[i].ty);
         }
@@ -68,6 +73,19 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         var lbl: u32 = 0;
 
         for (0..f.param_count) |i| {
+            if (!types.needsDrop(f.locals[i].ty)) continue;
+            try w.writeAll("    var ");
+            try emitLocalName(w, f, @intCast(i));
+            try w.print(" = p{d}_{s};\n", .{ i, f.locals[i].name });
+            if (!f.locals[i].moved) {
+                try w.writeAll("    defer ");
+                try emitLocalName(w, f, @intCast(i));
+                try w.writeAll(".deinit();\n");
+            }
+        }
+
+        for (0..f.param_count) |i| {
+            if (types.needsDrop(f.locals[i].ty)) continue;
             if (f.locals[i].used) continue;
             try w.writeAll("    _ = ");
             try emitLocalName(w, f, @intCast(i));
@@ -82,13 +100,20 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         }
         try w.writeAll("}\n\n");
 
-        if (f.is_entry) entry = f.name;
+        if (f.is_entry) {
+            entry = f.name;
+            entry_takes_allocator = f.param_count == 1 and f.locals[0].ty == .allocator;
+        }
     }
 
     if (entry) |name| {
         try w.writeAll("pub fn main(init: std.process.Init) !void {\n");
         try w.writeAll("    rt.init(init.io);\n");
-        try w.print("    try {s}{s}();\n", .{ prefix, name });
+        if (entry_takes_allocator) {
+            try w.print("    try {s}{s}(init.gpa);\n", .{ prefix, name });
+        } else {
+            try w.print("    try {s}{s}();\n", .{ prefix, name });
+        }
         try w.writeAll("}\n");
     }
 

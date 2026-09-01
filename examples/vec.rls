@@ -1,0 +1,31 @@
+fn total(v: &Vec<Int>) -> Int {
+    let mut sum = 0
+    let mut i = 0
+    while i < v.len() {
+        sum = sum + v.get(i)
+        i = i + 1
+    }
+    sum
+}
+
+fn squares(alloc: Allocator, upto: Int) -> Vec<Int> {
+    let v: Vec<Int> = Vec.new(alloc)
+    let mut i = 1
+    while i <= upto {
+        v.push(i * i)
+        i = i + 1
+    }
+    v
+}
+
+fn main(alloc: Allocator) {
+    let v = squares(alloc, 10)
+    println(v.len())
+    println(total(&v))
+    println(v.get(3))
+
+    let names: Vec<Str> = Vec.new(alloc)
+    names.push("ada")
+    names.push("grace")
+    println(names.get(1))
+}

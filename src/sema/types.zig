@@ -11,6 +11,8 @@ pub const Type = union(enum) {
     array: Array,
     ref: Ref,
     param: u32,
+    allocator,
+    vec: Vec,
 
     pub const Array = struct {
         elem: *const Type,
@@ -20,6 +22,10 @@ pub const Type = union(enum) {
     pub const Ref = struct {
         mutable: bool,
         target: *const Type,
+    };
+
+    pub const Vec = struct {
+        elem: *const Type,
     };
 
     pub fn eql(a: Type, b: Type) bool {
@@ -34,6 +40,8 @@ pub const Type = union(enum) {
             .array => |x| b == .array and x.len == b.array.len and eql(x.elem.*, b.array.elem.*),
             .ref => |r| b == .ref and r.mutable == b.ref.mutable and eql(r.target.*, b.ref.target.*),
             .param => |i| b == .param and b.param == i,
+            .allocator => b == .allocator,
+            .vec => |v| b == .vec and eql(v.elem.*, b.vec.elem.*),
         };
     }
 
@@ -42,6 +50,7 @@ pub const Type = union(enum) {
             .invalid => true,
             .array => |a| a.elem.isInvalid(),
             .ref => |r| r.target.isInvalid(),
+            .vec => |v| v.elem.isInvalid(),
             else => false,
         };
     }
@@ -92,6 +101,14 @@ pub fn hasParam(t: Type) bool {
         .param => true,
         .array => |a| hasParam(a.elem.*),
         .ref => |r| hasParam(r.target.*),
+        .vec => |v| hasParam(v.elem.*),
+        else => false,
+    };
+}
+
+pub fn needsDrop(t: Type) bool {
+    return switch (t) {
+        .vec => true,
         else => false,
     };
 }
@@ -109,6 +126,11 @@ pub fn substitute(arena: std.mem.Allocator, t: Type, args: []const Type) error{O
             target.* = try substitute(arena, r.target.*, args);
             break :blk .{ .ref = .{ .mutable = r.mutable, .target = target } };
         },
+        .vec => |v| blk: {
+            const elem = try arena.create(Type);
+            elem.* = try substitute(arena, v.elem.*, args);
+            break :blk .{ .vec = .{ .elem = elem } };
+        },
         else => t,
     };
 }
@@ -125,6 +147,7 @@ pub fn unify(declared: Type, actual: Type, out: []?Type) bool {
             unify(a.elem.*, actual.array.elem.*, out),
         .ref => |r| actual == .ref and r.mutable == actual.ref.mutable and
             unify(r.target.*, actual.ref.target.*, out),
+        .vec => |v| actual == .vec and unify(v.elem.*, actual.vec.elem.*, out),
         else => Type.eql(declared, actual),
     };
 }
@@ -133,6 +156,8 @@ pub fn isCopy(t: Type) bool {
     return switch (t) {
         .void, .bool, .int, .str, .invalid => true,
         .ref => true,
+        .allocator => true,
+        .vec => false,
         .param => false,
         .strukt, .enumeration => false,
         .array => |a| isCopy(a.elem.*),
@@ -153,6 +178,8 @@ pub fn nameOf(arena: std.mem.Allocator, reg: Registry, t: Type) ![]const u8 {
             a.len,
         }),
         .param => |i| std.fmt.allocPrint(arena, "T{d}", .{i}),
+        .allocator => "Allocator",
+        .vec => |v| std.fmt.allocPrint(arena, "Vec<{s}>", .{try nameOf(arena, reg, v.elem.*)}),
         .ref => |r| std.fmt.allocPrint(arena, "&{s}{s}", .{
             if (r.mutable) "mut " else "",
             try nameOf(arena, reg, r.target.*),

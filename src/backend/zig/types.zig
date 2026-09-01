@@ -11,6 +11,12 @@ pub const Error = error{ OutOfMemory, WriteFailed };
 pub fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void {
     switch (ty) {
         .void, .invalid, .param => try w.writeAll("void"),
+        .allocator => try w.writeAll("rt.Allocator"),
+        .vec => |v| {
+            try w.writeAll("rt.Vec(");
+            try emitType(w, program, v.elem.*);
+            try w.writeAll(")");
+        },
         .bool => try w.writeAll("bool"),
         .int => try w.writeAll("i64"),
         .str => try w.writeAll("[]const u8"),

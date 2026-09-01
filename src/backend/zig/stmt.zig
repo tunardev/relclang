@@ -42,11 +42,18 @@ pub fn emitStmt(
         },
         .let => |l| {
             try indent(w, level);
-            try w.writeAll(if (f.locals[l.slot].assigned) "var " else "const ");
+            const needs_var = f.locals[l.slot].assigned or types.needsDrop(f.locals[l.slot].ty);
+            try w.writeAll(if (needs_var) "var " else "const ");
             try emitLocalName(w, f, l.slot);
             try w.writeAll(" = ");
             try emitExpr(w, program, f, lbl, l.init);
             try w.writeAll(";\n");
+            if (types.needsDrop(f.locals[l.slot].ty) and !f.locals[l.slot].moved) {
+                try indent(w, level);
+                try w.writeAll("defer ");
+                try emitLocalName(w, f, l.slot);
+                try w.writeAll(".deinit();\n");
+            }
             if (!f.locals[l.slot].used) {
                 try indent(w, level);
                 try w.writeAll("_ = ");

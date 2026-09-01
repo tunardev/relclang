@@ -139,7 +139,21 @@ pub fn run(
         for (decl.variants) |variant| {
             var payload: std.ArrayList(types.Type) = .empty;
             for (variant.payload) |ty_expr| {
-                try payload.append(arena, try resolveTypeIn(arena, &table, ty_expr, decl.type_params, diags));
+                const payload_ty = try resolveTypeIn(arena, &table, ty_expr, decl.type_params, diags);
+
+                if (types.needsDrop(payload_ty)) {
+                    try diags.err(
+                        .unsupported_drop,
+                        ty_expr.spanOf(),
+                        try diags.fmt("an enum cannot hold `{s}`", .{
+                            try types.nameOf(arena, table.registry(), payload_ty),
+                        }),
+                        "this type frees memory when it goes out of scope",
+                        "keep it in a local binding and pass a reference instead",
+                    );
+                }
+
+                try payload.append(arena, payload_ty);
             }
             try variants.append(arena, .{
                 .name = variant.name,
@@ -197,9 +211,23 @@ pub fn run(
                     break;
                 }
             }
+            const field_ty = try resolveTypeIn(arena, &table, field.ty, decl.type_params, diags);
+
+            if (types.needsDrop(field_ty)) {
+                try diags.err(
+                    .unsupported_drop,
+                    field.ty.spanOf(),
+                    try diags.fmt("a struct cannot hold `{s}`", .{
+                        try types.nameOf(arena, table.registry(), field_ty),
+                    }),
+                    "this type frees memory when it goes out of scope",
+                    "keep it in a local binding and pass a reference instead",
+                );
+            }
+
             try fields.append(arena, .{
                 .name = field.name,
-                .ty = try resolveTypeIn(arena, &table, field.ty, decl.type_params, diags),
+                .ty = field_ty,
                 .span_name = field.name_span.start,
             });
         }
@@ -383,13 +411,14 @@ pub fn run(
 
         if (std.mem.eql(u8, f.name, entry_name)) {
             table.entry = index;
-            if (f.params.len != 0) {
+            const only_allocator = f.params.len == 1 and table.fns[index].params[0] == .allocator;
+            if (f.params.len != 0 and !only_allocator) {
                 try diags.err(
                     .bad_signature,
                     f.name_span,
-                    "`main` cannot take parameters",
+                    "`main` takes nothing, or one `Allocator`",
                     "remove the parameters",
-                    null,
+                    "write `fn main(alloc: Allocator)` to allocate",
                 );
             }
             if (table.fns[index].ret != .void) {

@@ -2,6 +2,11 @@
 zig-out/
 .relastic/
 /hello
-bench/collatz_rls
-bench/collatz_zig
-bench/collatz_c
+bench/collatz_*
+bench/sieve_*
+!bench/collatz.rls
+!bench/collatz.zig
+!bench/collatz.c
+!bench/sieve.rls
+!bench/sieve.zig
+!bench/sieve.c

@@ -29,6 +29,35 @@ pub fn resolveTypeIn(
             for (type_params, 0..) |tp, i| {
                 if (std.mem.eql(u8, tp.name, n.name)) return .{ .param = @intCast(i) };
             }
+            if (std.mem.eql(u8, n.name, "Vec")) {
+                if (n.args.len != 1) {
+                    try diags.err(
+                        .wrong_arg_count,
+                        n.span,
+                        "`Vec` takes 1 type argument",
+                        try diags.fmt("expected 1, found {d}", .{n.args.len}),
+                        "write it as `Vec<Int>`",
+                    );
+                    return .invalid;
+                }
+                const elem = try resolveTypeIn(arena, table, n.args[0], type_params, diags);
+                if (!types.isCopy(elem) and !types.hasParam(elem)) {
+                    try diags.err(
+                        .type_mismatch,
+                        n.args[0].spanOf(),
+                        "a `Vec` element must be a copied type",
+                        try diags.fmt("`{s}` is moved rather than copied", .{
+                            try types.nameOf(arena, table.registry(), elem),
+                        }),
+                        "`Int`, `Bool`, `Str` and references can be stored",
+                    );
+                    return .invalid;
+                }
+                const ptr = try arena.create(types.Type);
+                ptr.* = elem;
+                return .{ .vec = .{ .elem = ptr } };
+            }
+
             if (typecheck.typeFromName(n.name)) |primitive| return primitive;
 
             if (table.templateIndex(n.name)) |tpl_index| {

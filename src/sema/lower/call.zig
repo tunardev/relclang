@@ -237,8 +237,155 @@ pub fn lowerGenericCall(
     } };
 }
 
+const VEC_METHODS = [_]struct { name: []const u8, op: tir.VecOp.Op, arity: usize }{
+    .{ .name = "push", .op = .push, .arity = 1 },
+    .{ .name = "get", .op = .get, .arity = 1 },
+    .{ .name = "set", .op = .set, .arity = 2 },
+    .{ .name = "len", .op = .len, .arity = 0 },
+};
+
+fn lowerVecNew(f: *Fn, m: ast.MethodCall) Error!tir.Expr {
+    const bad: tir.Expr = .{ .vec_op = .{ .op = .new, .args = &.{}, .ty = .invalid, .span = m.span } };
+
+    const want = f.expected orelse {
+        try f.diags.err(
+            .cannot_infer,
+            m.span,
+            "cannot tell what this `Vec` holds",
+            "the element type is unknown here",
+            "annotate it, as in `let v: Vec<Int> = Vec.new(a)`",
+        );
+        return bad;
+    };
+
+    if (want != .vec) {
+        try f.diags.err(
+            .type_mismatch,
+            m.span,
+            "this is not a `Vec`",
+            try f.diags.fmt("expected `{s}`", .{try f.tyName(want)}),
+            null,
+        );
+        return bad;
+    }
+
+    if (m.args.len != 1) {
+        try f.diags.err(
+            .wrong_arg_count,
+            m.span,
+            "`Vec.new` takes an allocator",
+            try f.diags.fmt("expected 1, found {d}", .{m.args.len}),
+            null,
+        );
+        return bad;
+    }
+
+    const alloc = try lowerExpr(f, m.args[0]);
+    if (!alloc.typeOf().isInvalid() and alloc.typeOf() != .allocator) {
+        try f.diags.err(
+            .type_mismatch,
+            m.args[0].spanOf(),
+            "expected an allocator",
+            try f.diags.fmt("expected `Allocator`, found `{s}`", .{try f.tyName(alloc.typeOf())}),
+            null,
+        );
+    }
+
+    const args = try f.arena.alloc(tir.Expr, 1);
+    args[0] = alloc;
+
+    return .{ .vec_op = .{ .op = .new, .args = args, .ty = want, .span = m.span } };
+}
+
+fn lowerVecMethod(f: *Fn, m: ast.MethodCall, receiver: tir.Expr, vec_ty: Type) Error!tir.Expr {
+    const elem = vec_ty.vec.elem.*;
+    const bad: tir.Expr = .{ .vec_op = .{ .op = .len, .args = &.{}, .ty = .invalid, .span = m.span } };
+
+    const spec = for (VEC_METHODS) |candidate| {
+        if (std.mem.eql(u8, candidate.name, m.name)) break candidate;
+    } else {
+        try f.diags.err(
+            .unknown_method,
+            m.name_span,
+            try f.diags.fmt("no method `{s}` on `{s}`", .{ m.name, try f.tyName(vec_ty) }),
+            "not one of push, get, set or len",
+            null,
+        );
+        for (m.args) |arg| _ = try lowerExpr(f, arg);
+        return bad;
+    };
+
+    if (m.args.len != spec.arity) {
+        try f.diags.err(
+            .wrong_arg_count,
+            m.span,
+            try f.diags.fmt("`{s}` takes {d} {s}", .{
+                m.name,
+                spec.arity,
+                if (spec.arity == 1) "argument" else "arguments",
+            }),
+            try f.diags.fmt("expected {d}, found {d}", .{ spec.arity, m.args.len }),
+            null,
+        );
+        for (m.args) |arg| _ = try lowerExpr(f, arg);
+        return bad;
+    }
+
+    const wants: [2]Type = switch (spec.op) {
+        .push => .{ elem, .void },
+        .get => .{ .int, .void },
+        .set => .{ .int, elem },
+        else => .{ .void, .void },
+    };
+
+    var args: std.ArrayList(tir.Expr) = .empty;
+    try args.append(f.arena, receiver);
+
+    for (m.args, 0..) |arg, i| {
+        const lowered = try lowerWithExpected(f, arg, wants[i]);
+        const got = lowered.typeOf();
+        if (!got.isInvalid() and !Type.eql(got, wants[i])) {
+            try f.diags.err(
+                .type_mismatch,
+                arg.spanOf(),
+                "argument type mismatch",
+                try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(wants[i]), try f.tyName(got) }),
+                null,
+            );
+        }
+        try args.append(f.arena, lowered);
+    }
+
+    const result: Type = switch (spec.op) {
+        .get => elem,
+        .len => .int,
+        else => .void,
+    };
+
+    return .{ .vec_op = .{
+        .op = spec.op,
+        .args = try args.toOwnedSlice(f.arena),
+        .ty = result,
+        .span = m.span,
+    } };
+}
+
 pub fn lowerMethodCall(f: *Fn, m: ast.MethodCall) Error!tir.Expr {
+    if (m.receiver.* == .var_ref) {
+        const name = m.receiver.var_ref.name;
+        if (std.mem.eql(u8, name, "Vec") and f.lookup(name) == null) {
+            if (std.mem.eql(u8, m.name, "new")) return lowerVecNew(f, m);
+        }
+    }
+
     const receiver = try lowerExpr(f, m.receiver.*);
+
+    {
+        var probe = receiver.typeOf();
+        while (probe == .ref) probe = probe.ref.target.*;
+        if (probe == .vec) return lowerVecMethod(f, m, receiver, probe);
+    }
+
     var target = receiver.typeOf();
     while (target == .ref) target = target.ref.target.*;
 

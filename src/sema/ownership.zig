@@ -156,6 +156,7 @@ const Checker = struct {
 
             .deref => |d| try c.read(d.operand.*),
             .try_unwrap => |t| try c.consume(t.operand.*),
+            .vec_op => |v| for (v.args) |arg| try c.read(arg),
 
             .borrow => |b| {
                 try c.read(b.operand.*);
@@ -172,6 +173,7 @@ const Checker = struct {
                     return;
                 }
                 if (!types.isCopy(l.ty)) {
+                    c.func.locals[l.slot].moved = true;
                     if (c.borrowOf(l.slot)) |b| {
                         const local = c.func.locals[l.slot];
                         try c.diags.err(

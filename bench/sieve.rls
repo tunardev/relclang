@@ -1,0 +1,36 @@
+fn build(alloc: Allocator, limit: Int) -> Vec<Int> {
+    let flags: Vec<Int> = Vec.new(alloc)
+    let mut i = 0
+    while i <= limit {
+        flags.push(1)
+        i = i + 1
+    }
+
+    let mut p = 2
+    while p * p <= limit {
+        if flags.get(p) == 1 {
+            let mut m = p * p
+            while m <= limit {
+                flags.set(m, 0)
+                m = m + p
+            }
+        }
+        p = p + 1
+    }
+    flags
+}
+
+fn main(alloc: Allocator) {
+    let limit = 2000000
+    let flags = build(alloc, limit)
+
+    let mut count = 0
+    let mut n = 2
+    while n <= limit {
+        if flags.get(n) == 1 {
+            count = count + 1
+        }
+        n = n + 1
+    }
+    println(count)
+}

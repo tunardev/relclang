@@ -396,3 +396,104 @@ test "references are copy so they can be passed twice" {
     defer d.deinit();
     try testing.expect(!d.hasErrors());
 }
+
+test "a vec is moved rather than copied" {
+    var d = try checkText(testing.allocator,
+        \\fn take(v: Vec<Int>) -> Int {
+        \\    v.len()
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<Int> = Vec.new(alloc)
+        \\    println(take(v))
+        \\    println(v.len())
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .use_after_move));
+}
+
+test "a vec used once is fine" {
+    var d = try checkText(testing.allocator,
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<Int> = Vec.new(alloc)
+        \\    v.push(1)
+        \\    println(v.len())
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}
+
+test "borrowing a vec does not move it" {
+    var d = try checkText(testing.allocator,
+        \\fn size(v: &Vec<Int>) -> Int {
+        \\    v.len()
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<Int> = Vec.new(alloc)
+        \\    println(size(&v))
+        \\    println(size(&v))
+        \\    println(v.len())
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}
+
+test "a vec element must be copied" {
+    var d = try checkText(testing.allocator,
+        \\struct P {
+        \\    x: Int
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<P> = Vec.new(alloc)
+        \\    println(v.len())
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .type_mismatch));
+}
+
+test "a struct cannot hold a vec" {
+    var d = try checkText(testing.allocator,
+        \\struct Bag {
+        \\    items: Vec<Int>
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    println(1)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .unsupported_drop));
+}
+
+test "an unannotated vec cannot be inferred" {
+    var d = try checkText(testing.allocator,
+        \\fn main(alloc: Allocator) {
+        \\    let v = Vec.new(alloc)
+        \\    println(1)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .cannot_infer));
+}
+
+test "main may take an allocator or nothing" {
+    var with = try checkText(testing.allocator, "fn main(alloc: Allocator) {\n    println(1)\n}\n");
+    defer with.deinit();
+    try testing.expect(!with.hasErrors());
+
+    var without = try checkText(testing.allocator, "fn main() {\n    println(1)\n}\n");
+    defer without.deinit();
+    try testing.expect(!without.hasErrors());
+
+    var bad = try checkText(testing.allocator, "fn main(n: Int) {\n    println(n)\n}\n");
+    defer bad.deinit();
+    try testing.expect(has(bad, .bad_signature));
+}

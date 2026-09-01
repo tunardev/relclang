@@ -11,6 +11,25 @@ const emitValueBlock = @import("stmt.zig").emitValueBlock;
 const emitVoidBlock = @import("stmt.zig").emitVoidBlock;
 const indent = @import("stmt.zig").indent;
 
+fn emitTypeOf(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void {
+    return @import("types.zig").emitType(w, program, ty);
+}
+
+fn emitReceiver(
+    w: *std.Io.Writer,
+    program: tir.Program,
+    f: tir.Function,
+    lbl: *u32,
+    e: tir.Expr,
+) Error!void {
+    if (e.typeOf() == .ref) {
+        try emitExpr(w, program, f, lbl, e);
+        return;
+    }
+    try w.writeAll("&");
+    try emitExpr(w, program, f, lbl, e);
+}
+
 pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32, expr: tir.Expr) Error!void {
     switch (expr) {
         .string_const => |s| try emitZigString(w, s.value),
@@ -136,6 +155,46 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
             try w.writeAll("(");
             try emitExpr(w, program, f, lbl, d.operand.*);
             try w.writeAll(").*");
+        },
+
+        .vec_op => |v| {
+            switch (v.op) {
+                .new => {
+                    try w.writeAll("rt.Vec(");
+                    try emitTypeOf(w, program, v.ty.vec.elem.*);
+                    try w.writeAll(").init(");
+                    try emitExpr(w, program, f, lbl, v.args[0]);
+                    try w.writeAll(")");
+                },
+                .len => {
+                    try w.writeAll("(");
+                    try emitReceiver(w, program, f, lbl, v.args[0]);
+                    try w.writeAll(").len()");
+                },
+                .get => {
+                    try w.writeAll("(try (");
+                    try emitReceiver(w, program, f, lbl, v.args[0]);
+                    try w.writeAll(").get(");
+                    try emitExpr(w, program, f, lbl, v.args[1]);
+                    try w.writeAll("))");
+                },
+                .push => {
+                    try w.writeAll("(try (");
+                    try emitReceiver(w, program, f, lbl, v.args[0]);
+                    try w.writeAll(").push(");
+                    try emitExpr(w, program, f, lbl, v.args[1]);
+                    try w.writeAll("))");
+                },
+                .set => {
+                    try w.writeAll("(try (");
+                    try emitReceiver(w, program, f, lbl, v.args[0]);
+                    try w.writeAll(").set(");
+                    try emitExpr(w, program, f, lbl, v.args[1]);
+                    try w.writeAll(", ");
+                    try emitExpr(w, program, f, lbl, v.args[2]);
+                    try w.writeAll("))");
+                },
+            }
         },
 
         .try_unwrap => |t| {

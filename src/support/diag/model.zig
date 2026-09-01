@@ -39,6 +39,7 @@ pub const Code = enum {
     unknown_trait,
     unknown_method,
     missing_impl,
+    unsupported_drop,
 
     pub fn id(c: Code) []const u8 {
         return switch (c) {
@@ -77,6 +78,7 @@ pub const Code = enum {
             .unknown_trait => "E0033",
             .unknown_method => "E0034",
             .missing_impl => "E0035",
+            .unsupported_drop => "E0036",
         };
     }
 };
