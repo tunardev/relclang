@@ -264,8 +264,8 @@ test "moving one field releases its owning siblings" {
     );
     defer gpa.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "v1_bag_live = false; rt.drop(&v1_bag.f2_b); break :m0") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "rt.drop(&v1_bag.f1_n)") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "v3_bag_live = false; rt.drop(&v3_bag.f2_b); break :m1") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "rt.drop(&v3_bag.f1_n)") == null);
 }
 
 test "reassigning an owned local releases the old value first" {
@@ -283,4 +283,27 @@ test "reassigning an owned local releases the old value first" {
     defer gpa.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "{ const __new = (try rc_make(v0_alloc)); rt.drop(&v1_v); v1_v = __new; }") != null);
+}
+
+test "an arm that yields its owned binding clears the binding flag" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa,
+        \\enum Holder {
+        \\    Some(Vec<Int>)
+        \\    None
+        \\}
+        \\fn unwrap(alloc: Allocator, h: Holder) -> Vec<Int> {
+        \\    match h {
+        \\        Some(v) => v
+        \\        None => Vec.new(alloc)
+        \\    }
+        \\}
+        \\fn main() {
+        \\}
+        \\
+    );
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "defer if (v2_v_live) rt.drop(&v2_v);") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "break :blk (m0: { v2_v_live = false; break :m0 v2_v; });") != null);
 }

@@ -361,11 +361,11 @@ const Checker = struct {
     }
 
     fn checkWhile(c: *Checker, node: tir.While) Error!void {
-        try c.read(node.cond.*);
-
         const before = try c.snapshot();
         defer c.gpa.free(before);
 
+        for (node.cond_temps) |stmt| try c.checkStmt(stmt);
+        try c.read(node.cond.*);
         try c.checkBlock(node.body);
 
         for (c.states, before, 0..) |state, was, slot| {
@@ -397,6 +397,7 @@ const Checker = struct {
         } else {
             try c.read(m.scrutinee.*);
         }
+        if (m.by_ref) try c.borrowReceiver(m.scrutinee.*, m.span);
 
         const before = try c.snapshot();
         defer c.gpa.free(before);
@@ -407,7 +408,8 @@ const Checker = struct {
         for (m.arms) |arm| {
             @memcpy(c.states, before);
             for (arm.bindings) |slot| c.states[slot] = .owned;
-            try c.read(arm.body);
+            for (arm.temps) |stmt| try c.checkStmt(stmt);
+            if (m.ty == .void) try c.read(arm.body) else try c.consume(arm.body);
             for (merged, c.states) |*state, now| {
                 if (now == .moved) state.* = .moved;
             }

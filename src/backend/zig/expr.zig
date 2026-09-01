@@ -11,6 +11,8 @@ const regOf = zig_types.regOf;
 const stmt_mod = @import("stmt.zig");
 const emitValueBlock = stmt_mod.emitValueBlock;
 const emitVoidBlock = stmt_mod.emitVoidBlock;
+const emitBlockBody = stmt_mod.emitBlockBody;
+const emitOwnedGuard = stmt_mod.emitOwnedGuard;
 const indent = stmt_mod.indent;
 
 pub fn needsFlag(program: tir.Program, f: tir.Function, slot: u32) bool {
@@ -40,16 +42,16 @@ fn emitMoveClear(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: 
     switch (e) {
         .local_ref => |l| {
             try emitFlagName(w, f, l.slot);
-            try w.writeAll(" = false; ");
+            try w.writeAll(" = false;");
         },
         .field => |fa| {
             try emitMoveClear(w, program, f, lbl, fa.base.*);
             const def = program.structs[fa.strukt];
             for (def.fields, 0..) |field, k| {
                 if (k == fa.field or !types.needsDrop(field.ty, regOf(program))) continue;
-                try w.writeAll("rt.drop(&");
+                try w.writeAll(" rt.drop(&");
                 try emitExpr(w, program, f, lbl, fa.base.*);
-                try w.print(".f{d}_{s}); ", .{ k, field.name });
+                try w.print(".f{d}_{s});", .{ k, field.name });
             }
         },
         else => {},
@@ -63,7 +65,7 @@ pub fn emitOwned(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: 
     lbl.* += 1;
     try w.print("(m{d}: {{ ", .{id});
     try emitMoveClear(w, program, f, lbl, e);
-    try w.print("break :m{d} ", .{id});
+    try w.print(" break :m{d} ", .{id});
     try emitExpr(w, program, f, lbl, e);
     try w.writeAll("; })");
 }
@@ -88,7 +90,9 @@ pub fn beginMoves(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl:
         try w.writeAll("; ");
     }
     for (args) |arg| {
-        if (moveRoot(program, f, arg) != null) try emitMoveClear(w, program, f, lbl, arg);
+        if (moveRoot(program, f, arg) == null) continue;
+        try emitMoveClear(w, program, f, lbl, arg);
+        try w.writeAll(" ");
     }
     try w.print("break :m{d} ", .{id});
     return .{ .id = id };
@@ -383,10 +387,23 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
         },
 
         .while_expr => |node| {
-            try w.writeAll("while (");
+            if (node.cond_temps.len == 0) {
+                try w.writeAll("while (");
+                try emitExpr(w, program, f, lbl, node.cond.*);
+                try w.writeAll(") ");
+                try emitVoidBlock(w, program, f, lbl, node.body);
+                return;
+            }
+
+            try w.writeAll("while (true) {\n");
+            try emitBlockBody(w, program, f, lbl, .{ .stmts = node.cond_temps, .result = null }, 3);
+            try indent(w, 3);
+            try w.writeAll("if (!(");
             try emitExpr(w, program, f, lbl, node.cond.*);
-            try w.writeAll(") ");
-            try emitVoidBlock(w, program, f, lbl, node.body);
+            try w.writeAll(")) break;\n");
+            try emitBlockBody(w, program, f, lbl, node.body, 3);
+            try indent(w, 1);
+            try w.writeAll("}");
         },
     }
 }
@@ -443,7 +460,11 @@ pub fn emitMatch(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: 
         }
 
         const captures = arm.variant != null and def.variants[arm.variant.?].payload.len > 0;
-        if (captures) try w.writeAll(" => |__p| ") else try w.writeAll(" => ");
+        if (captures) {
+            try w.writeAll(if (m.by_ref) " => |*__p| " else " => |__p| ");
+        } else {
+            try w.writeAll(" => ");
+        }
 
         if (is_void) {
             try w.writeAll("{\n");
@@ -453,20 +474,35 @@ pub fn emitMatch(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: 
 
         if (captures and arm.bindings.len == 0) try w.writeAll("            _ = __p;\n");
 
+        var takes_payload = false;
         for (arm.bindings, 0..) |slot, i| {
-            try w.writeAll("            const ");
+            const local = f.locals[slot];
+            const owned = !m.by_ref and types.needsDrop(local.ty, regOf(program));
+            if (owned) takes_payload = true;
+            try indent(w, 3);
+            try w.writeAll(if (owned) "var " else "const ");
             try emitLocalName(w, f, slot);
-            try w.print(" = __p.f{d};\n", .{i});
-            if (!f.locals[slot].used) {
-                try w.writeAll("            _ = ");
+            try w.print(" = {s}__p.f{d};\n", .{ if (m.by_ref and local.ty == .ref) "&" else "", i });
+            if (owned) try emitOwnedGuard(w, program, f, slot, 3);
+            if (!local.used) {
+                try indent(w, 3);
+                try w.writeAll("_ = ");
                 try emitLocalName(w, f, slot);
                 try w.writeAll(";\n");
             }
         }
 
-        try w.writeAll("            ");
+        if (takes_payload and moveRoot(program, f, m.scrutinee.*) != null) {
+            try indent(w, 3);
+            try emitMoveClear(w, program, f, lbl, m.scrutinee.*);
+            try w.writeAll("\n");
+        }
+
+        try emitBlockBody(w, program, f, lbl, .{ .stmts = arm.temps, .result = null }, 3);
+
+        try indent(w, 3);
         if (!is_void) try w.writeAll("break :blk ");
-        try emitExpr(w, program, f, lbl, arm.body);
+        try emitOwned(w, program, f, lbl, arm.body);
         try w.writeAll(";\n        },\n");
     }
 

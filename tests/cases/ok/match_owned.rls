@@ -1,0 +1,68 @@
+enum Holder {
+    Some(Vec<Int>)
+    None
+}
+
+struct Slot {
+    held: Holder
+    tag: Vec<Int>
+}
+
+fn make(alloc: Allocator, n: Int) -> Vec<Int> {
+    let v: Vec<Int> = Vec.new(alloc)
+    let mut i = 0
+    while i < n {
+        v.push(i)
+        i = i + 1
+    }
+    v
+}
+
+fn consume(v: Vec<Int>) {
+    println(v.len())
+}
+
+fn count(h: &Holder) -> Int {
+    match h {
+        Some(v) => v.len()
+        None => 0
+    }
+}
+
+fn unwrap_or_empty(alloc: Allocator, h: Holder) -> Vec<Int> {
+    match h {
+        Some(v) => v
+        None => make(alloc, 0)
+    }
+}
+
+fn main(alloc: Allocator) {
+    let h = Some(make(alloc, 2))
+    println(count(&h))
+    match h {
+        Some(v) => println(v.len())
+        None => println(0)
+    }
+
+    let kept = Some(make(alloc, 3))
+    match kept {
+        None => println(0)
+        _ => println(1)
+    }
+
+    let taken = unwrap_or_empty(alloc, Some(make(alloc, 4)))
+    println(taken.len())
+    let empty = unwrap_or_empty(alloc, None)
+    println(empty.len())
+
+    let slot = Slot { held: Some(make(alloc, 5)), tag: make(alloc, 1) }
+    match slot.held {
+        Some(v) => consume(v)
+        None => println(0)
+    }
+
+    match Some(make(alloc, 6)) {
+        Some(v) => println(v.len())
+        None => println(0)
+    }
+}

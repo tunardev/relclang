@@ -843,3 +843,48 @@ test "copying a plain struct out of a reference is allowed" {
     defer d.deinit();
     try testing.expect(!d.hasErrors());
 }
+
+test "assigning while a by reference match binding is held reports E0030" {
+    var d = try checkText(testing.allocator,
+        \\enum Holder {
+        \\    Some(Vec<Int>)
+        \\    None
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let other: Vec<Int> = Vec.new(alloc)
+        \\    let mut h = Some(Vec.new(alloc))
+        \\    let r = match &h {
+        \\        Some(inner) => inner
+        \\        None => &other
+        \\    }
+        \\    h = None
+        \\    println(r.len())
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .borrow_conflict));
+}
+
+test "matching through a reference borrows the payload instead of moving it" {
+    var d = try checkText(testing.allocator,
+        \\enum Holder {
+        \\    Some(Vec<Int>)
+        \\    None
+        \\}
+        \\fn count(h: &Holder) -> Int {
+        \\    match h {
+        \\        Some(v) => v.len()
+        \\        None => 0
+        \\    }
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let h = Some(Vec.new(alloc))
+        \\    println(count(&h))
+        \\    println(count(&h))
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}

@@ -116,14 +116,54 @@ pub const Fn = struct {
         };
     }
 
-    pub fn hoistOwning(f: *Fn, value: tir.Expr) Error!tir.Expr {
-        const ty = value.typeOf();
-        if (!types.needsDrop(ty, f.symbols.registry())) return value;
+    pub fn isTrivial(value: tir.Expr) bool {
+        return switch (value) {
+            .string_const, .int_const, .bool_const, .local_ref => true,
+            .borrow => |b| isTrivial(b.operand.*),
+            .field => |x| isTrivial(x.base.*),
+            .index => |x| isTrivial(x.base.*) and isTrivial(x.index.*),
+            .deref => |d| isTrivial(d.operand.*),
+            else => false,
+        };
+    }
 
-        switch (value) {
-            .local_ref, .field, .index, .deref, .borrow => return value,
-            else => {},
+    pub fn isPlace(value: tir.Expr) bool {
+        return switch (value) {
+            .local_ref, .field, .index, .deref => true,
+            else => false,
+        };
+    }
+
+    pub fn ownsTemporary(f: *Fn, value: tir.Expr) bool {
+        return !isPlace(value) and types.needsDrop(value.typeOf(), f.symbols.registry());
+    }
+
+    pub fn hoistOwning(f: *Fn, value: tir.Expr) Error!tir.Expr {
+        if (!f.ownsTemporary(value)) return value;
+        return f.hoistTemp(value);
+    }
+
+    pub fn hoistList(f: *Fn, items: []tir.Expr) Error!void {
+        var any = false;
+        for (items) |item| {
+            if (f.ownsTemporary(item)) any = true;
         }
+        if (!any) return;
+        for (items) |*item| {
+            if (isTrivial(item.*)) continue;
+            item.* = try f.hoistTemp(item.*);
+        }
+    }
+
+    pub fn takeTemps(f: *Fn, mark: usize) Error![]const tir.Stmt {
+        const out = try f.arena.dupe(tir.Stmt, f.temps.items[mark..]);
+        f.temps.shrinkRetainingCapacity(mark);
+        return out;
+    }
+
+    pub fn hoistTemp(f: *Fn, value: tir.Expr) Error!tir.Expr {
+        const ty = value.typeOf();
+        if (ty == .void or ty.isInvalid()) return value;
 
         const slot: u32 = @intCast(f.locals.items.len);
         try f.locals.append(f.arena, .{

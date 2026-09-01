@@ -41,10 +41,10 @@ pub fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
     var args: std.ArrayList(tir.Expr) = .empty;
     for (c.args, 0..) |arg, i| {
         const want: ?Type = if (i < declared.len) declared[i] else null;
-        const value = try lowerWithExpected(f, arg, want);
-        try args.append(f.arena, try f.hoistOwning(value));
+        try args.append(f.arena, try lowerWithExpected(f, arg, want));
     }
     const lowered = try args.toOwnedSlice(f.arena);
+    try f.hoistList(lowered);
 
     const symbol = f.symbols.lookup(c.callee) orelse {
         try f.diags.err(
@@ -398,9 +398,12 @@ fn lowerVecMethod(f: *Fn, m: ast.MethodCall, receiver: tir.Expr, vec_ty: Type) E
         else => .void,
     };
 
+    const lowered = try args.toOwnedSlice(f.arena);
+    try f.hoistList(lowered[1..]);
+
     return .{ .vec_op = .{
         .op = spec.op,
-        .args = try args.toOwnedSlice(f.arena),
+        .args = lowered,
         .ty = result,
         .span = m.span,
     } };
@@ -512,7 +515,7 @@ pub fn lowerMethodCall(f: *Fn, m: ast.MethodCall) Error!tir.Expr {
         }
     }
 
-    const receiver = try lowerExpr(f, m.receiver.*);
+    const receiver = try f.hoistOwning(try lowerExpr(f, m.receiver.*));
 
     {
         var probe = receiver.typeOf();
@@ -567,6 +570,7 @@ pub fn lowerMethodCall(f: *Fn, m: ast.MethodCall) Error!tir.Expr {
     }
 
     const lowered = try args.toOwnedSlice(f.arena);
+    try f.hoistList(lowered);
 
     if (lowered.len != info.params.len) {
         try f.diags.err(

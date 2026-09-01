@@ -166,7 +166,9 @@ pub fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         .if_expr => |node| return lowerIf(f, node, true),
 
         .while_expr => |node| {
+            const mark = f.temps.items.len;
             const cond = try lowerExpr(f, node.cond.*);
+            const cond_temps = try f.takeTemps(mark);
             const cond_ty = cond.typeOf();
             if (!cond_ty.isInvalid() and cond_ty != .bool) {
                 try f.diags.err(
@@ -179,6 +181,7 @@ pub fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
             }
             const body = try lowerBlock(f, node.body, false);
             return .{ .while_expr = .{
+                .cond_temps = cond_temps,
                 .cond = try f.box(cond),
                 .body = body,
                 .span = node.span,
@@ -188,7 +191,8 @@ pub fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         .struct_lit => |s| return lowerStructLit(f, s),
 
         .borrow => |b| {
-            const operand = try lowerExpr(f, b.operand.*);
+            var operand = try lowerExpr(f, b.operand.*);
+            if (!b.mutable) operand = try f.hoistOwning(operand);
             const target = try f.arena.create(Type);
             target.* = operand.typeOf();
 
@@ -224,7 +228,7 @@ pub fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         },
 
         .field => |fa| {
-            const raw_base = try lowerExpr(f, fa.base.*);
+            const raw_base = try f.hoistOwning(try lowerExpr(f, fa.base.*));
             const base = try autoDeref(f, raw_base);
             const base_ty = base.typeOf();
 
@@ -270,6 +274,7 @@ pub fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
             var elems: std.ArrayList(tir.Expr) = .empty;
             for (a.elems) |e| try elems.append(f.arena, try lowerExpr(f, e));
             const lowered = try elems.toOwnedSlice(f.arena);
+            try f.hoistList(lowered);
 
             if (lowered.len == 0) {
                 try f.diags.err(
@@ -307,7 +312,7 @@ pub fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         },
 
         .index => |x| {
-            const raw_base = try lowerExpr(f, x.base.*);
+            const raw_base = try f.hoistOwning(try lowerExpr(f, x.base.*));
             const base = try autoDeref(f, raw_base);
             const idx = try lowerExpr(f, x.index.*);
 

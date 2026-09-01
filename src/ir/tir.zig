@@ -44,6 +44,7 @@ pub const If = struct {
 };
 
 pub const While = struct {
+    cond_temps: []const Stmt,
     cond: *const Expr,
     body: Block,
     span: Span,
@@ -150,6 +151,7 @@ pub const EnumLit = struct {
 pub const MatchArm = struct {
     variant: ?u32,
     bindings: []const u32,
+    temps: []const Stmt,
     body: Expr,
     span: Span,
 };
@@ -157,6 +159,7 @@ pub const MatchArm = struct {
 pub const Match = struct {
     scrutinee: *const Expr,
     enumeration: u32,
+    by_ref: bool,
     arms: []const MatchArm,
     ty: types.Type,
     span: Span,

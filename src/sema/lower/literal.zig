@@ -98,6 +98,8 @@ pub fn lowerStructLit(f: *Fn, s: ast.StructLit) Error!tir.Expr {
         }
     }
 
+    try f.hoistList(slots);
+
     return .{ .struct_lit = .{
         .strukt = index,
         .fields = slots,
@@ -213,6 +215,8 @@ pub fn lowerGenericStructLit(f: *Fn, s: ast.StructLit, tpl_index: u32) Error!tir
             );
         }
     }
+
+    try f.hoistList(slots);
 
     return .{ .struct_lit = .{
         .strukt = index,

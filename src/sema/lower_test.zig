@@ -924,3 +924,31 @@ test "the question mark works with a plain enum" {
     const try_expr = l.program.functions[1].body.stmts[0].let.init.try_unwrap;
     try testing.expectEqual(try_expr.source_enum, try_expr.ret_enum);
 }
+
+test "a match through a reference binds owning payloads by reference" {
+    var l = try lowerText(testing.allocator,
+        \\enum Holder {
+        \\    Some(Vec<Int>, Int)
+        \\    None
+        \\}
+        \\fn count(h: &Holder) -> Int {
+        \\    match h {
+        \\        Some(v, n) => v.len() + n
+        \\        None => 0
+        \\    }
+        \\}
+        \\fn main() {
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+
+    const f = l.program.functions[0];
+    const m = f.body.result.?.match;
+    try testing.expect(m.by_ref);
+    const v = f.locals[m.arms[0].bindings[0]];
+    const n = f.locals[m.arms[0].bindings[1]];
+    try testing.expect(v.ty == .ref and v.ty.ref.target.* == .vec);
+    try testing.expectEqual(types.Type.int, n.ty);
+}

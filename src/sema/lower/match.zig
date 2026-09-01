@@ -1,11 +1,8 @@
 const std = @import("std");
 const source = @import("../../support/source.zig");
-const diagnostics = @import("../../support/diagnostics.zig");
 const ast = @import("../../syntax/ast.zig");
 const tir = @import("../../ir/tir.zig");
 const types = @import("../types.zig");
-const resolve = @import("../resolve.zig");
-const typecheck = @import("../type_rules.zig");
 
 const Span = source.Span;
 const Type = types.Type;
@@ -16,9 +13,23 @@ const Fn = ctx.Fn;
 const expr_mod = @import("expr.zig");
 const lowerExpr = expr_mod.lowerExpr;
 const lowerWithExpected = expr_mod.lowerWithExpected;
+const autoDeref = expr_mod.autoDeref;
+
+fn throughRef(expr: tir.Expr) ?bool {
+    return switch (expr) {
+        .deref => |d| blk: {
+            const ty = d.operand.typeOf();
+            break :blk if (ty == .ref) ty.ref.mutable else null;
+        },
+        .field => |x| throughRef(x.base.*),
+        .index => |x| throughRef(x.base.*),
+        else => null,
+    };
+}
 
 pub fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
-    const scrutinee = try lowerExpr(f, m.scrutinee.*);
+    const raw = try lowerExpr(f, m.scrutinee.*);
+    const scrutinee = try autoDeref(f, try f.hoistOwning(raw));
     const scrut_ty = scrutinee.typeOf();
 
     if (scrut_ty != .enumeration) {
@@ -35,6 +46,7 @@ pub fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
         return .{ .match = .{
             .scrutinee = try f.box(scrutinee),
             .enumeration = 0,
+            .by_ref = false,
             .arms = &.{},
             .ty = .invalid,
             .span = m.span,
@@ -43,6 +55,10 @@ pub fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
 
     const enum_index = scrut_ty.enumeration;
     const def = f.symbols.enums.items[enum_index];
+
+    const ref_mutable = throughRef(scrutinee);
+    const by_ref = ref_mutable != null;
+    const origin = if (by_ref) f.rootSlotOf(scrutinee) else null;
 
     const covered = try f.gpa.alloc(bool, def.variants.len);
     defer f.gpa.free(covered);
@@ -116,14 +132,23 @@ pub fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
                     } else {
                         slots = try f.arena.alloc(u32, payload.len);
                         for (v.bindings, 0..) |binding, i| {
-                            slots[i] = try f.declare(binding.name, payload[i]);
+                            var bound_ty = payload[i];
+                            if (by_ref and !types.isCopy(bound_ty)) {
+                                const target = try f.arena.create(Type);
+                                target.* = bound_ty;
+                                bound_ty = .{ .ref = .{ .mutable = ref_mutable.?, .target = target } };
+                            }
+                            slots[i] = try f.declare(binding.name, bound_ty);
+                            if (bound_ty == .ref) f.locals.items[slots[i]].borrows_local = origin;
                         }
                     }
                 }
             },
         }
 
+        const temp_mark = f.temps.items.len;
         const body = try lowerWithExpected(f, arm.body, arm_expected);
+        const temps = try f.takeTemps(temp_mark);
         const body_ty = body.typeOf();
 
         if (result_ty) |want| {
@@ -145,6 +170,7 @@ pub fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
         try arms.append(f.arena, .{
             .variant = variant_index,
             .bindings = slots,
+            .temps = temps,
             .body = body,
             .span = arm.span,
         });
@@ -179,6 +205,7 @@ pub fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
     return .{ .match = .{
         .scrutinee = try f.box(scrutinee),
         .enumeration = enum_index,
+        .by_ref = by_ref,
         .arms = try arms.toOwnedSlice(f.arena),
         .ty = result_ty orelse (if (saw_invalid) Type.invalid else Type.void),
         .span = m.span,

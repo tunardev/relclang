@@ -1,0 +1,82 @@
+struct Bag {
+    items: Vec<Int>
+    n: Int
+}
+
+enum Maybe {
+    Just(Int)
+    Nothing
+}
+
+enum R {
+    Ok(Int)
+    Err(Str)
+}
+
+fn make(alloc: Allocator, n: Int) -> Vec<Int> {
+    let v: Vec<Int> = Vec.new(alloc)
+    let mut i = 0
+    while i < n {
+        v.push(i)
+        i = i + 1
+    }
+    v
+}
+
+fn label(alloc: Allocator, n: Int) -> String {
+    let s: String = String.new(alloc)
+    s.push("n")
+    s.push_int(n)
+    s
+}
+
+fn make_bag(alloc: Allocator) -> Bag {
+    Bag { items: make(alloc, 2), n: 7 }
+}
+
+fn consume(v: Vec<Int>) {
+    println(v.len())
+}
+
+fn fails() -> R {
+    Err("nope")
+}
+
+fn build(alloc: Allocator) -> R {
+    let bag = Bag { items: make(alloc, 1), n: fails()? }
+    Ok(bag.n)
+}
+
+fn pick(alloc: Allocator, first: Bool) -> Vec<Int> {
+    let a = make(alloc, 1)
+    let b = make(alloc, 2)
+    if first {
+        return a
+    }
+    b
+}
+
+fn main(alloc: Allocator) {
+    println(make(alloc, 3).len())
+    println(label(alloc, 9))
+    println(make_bag(alloc).n)
+    println(pick(alloc, true).len())
+    println(pick(alloc, false).len())
+
+    let mut n = 3
+    while make(alloc, n).len() > 0 {
+        n = n - 1
+    }
+    println(n)
+
+    let m = Just(3)
+    match m {
+        Just(k) => consume(make(alloc, k))
+        Nothing => println(0)
+    }
+
+    match build(alloc) {
+        Ok(v) => println(v)
+        Err(e) => println(e)
+    }
+}
