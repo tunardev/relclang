@@ -1,0 +1,8 @@
+error[E0020]: missing field `y` in `Point`
+
+  --> missing_field.rls:7:13
+   |
+ 7 |     let p = Point { x: 1 }
+   |             ^^^^^^^^^^^^^^ this field is never set
+   |
+

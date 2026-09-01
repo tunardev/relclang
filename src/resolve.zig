@@ -51,6 +51,8 @@ pub const SymbolTable = struct {
     map: std.StringHashMapUnmanaged(Symbol),
     entry: ?usize,
     fns: []const FnInfo,
+    structs: []const types.StructDef,
+    struct_map: std.StringHashMapUnmanaged(u32),
 
     pub fn lookup(t: *const SymbolTable, name: []const u8) ?Symbol {
         return t.map.get(name);
@@ -60,28 +62,82 @@ pub const SymbolTable = struct {
         return t.fns[index];
     }
 
+    pub fn structIndex(t: *const SymbolTable, name: []const u8) ?u32 {
+        return t.struct_map.get(name);
+    }
+
+    pub fn typeName(t: *const SymbolTable, arena: std.mem.Allocator, ty: types.Type) ![]const u8 {
+        return types.nameOf(arena, t.structs, ty);
+    }
+
     pub fn deinit(t: *SymbolTable) void {
         t.map.deinit(t.gpa);
+        t.struct_map.deinit(t.gpa);
     }
 };
 
 const entry_name = "main";
 
-fn resolveTypeName(
-    name: []const u8,
-    span: source.Span,
+fn resolveType(
+    arena: std.mem.Allocator,
+    table: *const SymbolTable,
+    expr: ast.TypeExpr,
     diags: *diagnostics.Diagnostics,
 ) !types.Type {
-    return typecheck.typeFromName(name) orelse {
-        try diags.err(
-            .type_mismatch,
-            span,
-            try diags.fmt("unknown type `{s}`", .{name}),
-            "not a known type",
-            "the types are `Int`, `Str` and `Void`",
-        );
-        return .invalid;
-    };
+    switch (expr) {
+        .named => |n| {
+            if (typecheck.typeFromName(n.name)) |primitive| return primitive;
+            if (table.structIndex(n.name)) |index| return .{ .strukt = index };
+
+            try diags.err(
+                .unknown_struct,
+                n.span,
+                try diags.fmt("unknown type `{s}`", .{n.name}),
+                "not a known type",
+                "the built in types are `Int`, `Str` and `Void`",
+            );
+            return .invalid;
+        },
+        .array => |a| {
+            const elem = try resolveType(arena, table, a.elem.*, diags);
+
+            const len = std.fmt.parseInt(u64, a.len_text, 10) catch {
+                try diags.err(
+                    .integer_overflow,
+                    a.len_span,
+                    "array length is out of range",
+                    "not a valid length",
+                    null,
+                );
+                return .invalid;
+            };
+
+            const ptr = try arena.create(types.Type);
+            ptr.* = elem;
+            return .{ .array = .{ .elem = ptr, .len = len } };
+        },
+    }
+}
+
+fn structDepth(
+    structs: []const types.StructDef,
+    index: u32,
+    seen: []bool,
+    done: []bool,
+) bool {
+    if (done[index]) return false;
+    if (seen[index]) return true;
+    seen[index] = true;
+
+    for (structs[index].fields) |field| {
+        var ty = field.ty;
+        while (ty == .array) ty = ty.array.elem.*;
+        if (ty == .strukt and structDepth(structs, ty.strukt, seen, done)) return true;
+    }
+
+    seen[index] = false;
+    done[index] = true;
+    return false;
 }
 
 pub fn run(
@@ -90,8 +146,75 @@ pub fn run(
     program: ast.Program,
     diags: *diagnostics.Diagnostics,
 ) !SymbolTable {
-    var table: SymbolTable = .{ .gpa = gpa, .map = .empty, .entry = null, .fns = &.{} };
+    var table: SymbolTable = .{
+        .gpa = gpa,
+        .map = .empty,
+        .entry = null,
+        .fns = &.{},
+        .structs = &.{},
+        .struct_map = .empty,
+    };
     errdefer table.deinit();
+
+    for (program.structs, 0..) |decl, index| {
+        if (table.struct_map.get(decl.name) != null) {
+            try diags.err(
+                .duplicate_function,
+                decl.name_span,
+                try diags.fmt("`{s}` is already defined", .{decl.name}),
+                "duplicate struct",
+                null,
+            );
+            continue;
+        }
+        try table.struct_map.put(gpa, decl.name, @intCast(index));
+    }
+
+    var defs: std.ArrayList(types.StructDef) = .empty;
+    for (program.structs) |decl| {
+        var fields: std.ArrayList(types.Field) = .empty;
+        for (decl.fields) |field| {
+            for (fields.items) |existing| {
+                if (std.mem.eql(u8, existing.name, field.name)) {
+                    try diags.err(
+                        .duplicate_binding,
+                        field.name_span,
+                        try diags.fmt("field `{s}` is already declared", .{field.name}),
+                        "duplicate field",
+                        null,
+                    );
+                    break;
+                }
+            }
+            try fields.append(arena, .{
+                .name = field.name,
+                .ty = try resolveType(arena, &table, field.ty, diags),
+                .span_name = field.name_span.start,
+            });
+        }
+        try defs.append(arena, .{ .name = decl.name, .fields = try fields.toOwnedSlice(arena) });
+    }
+    table.structs = try defs.toOwnedSlice(arena);
+
+    if (table.structs.len > 0) {
+        const seen = try arena.alloc(bool, table.structs.len);
+        const done = try arena.alloc(bool, table.structs.len);
+        @memset(seen, false);
+        @memset(done, false);
+
+        for (table.structs, 0..) |_, i| {
+            if (structDepth(table.structs, @intCast(i), seen, done)) {
+                try diags.err(
+                    .recursive_struct,
+                    program.structs[i].name_span,
+                    try diags.fmt("`{s}` contains itself", .{table.structs[i].name}),
+                    "this struct would have infinite size",
+                    "store it behind a reference once references exist",
+                );
+                @memset(seen, false);
+            }
+        }
+    }
 
     inline for (@typeInfo(Builtin).@"enum".fields) |field| {
         try table.map.put(gpa, field.name, .{ .builtin = @field(Builtin, field.name) });
@@ -102,11 +225,11 @@ pub fn run(
     for (program.fns) |f| {
         var params: std.ArrayList(types.Type) = .empty;
         for (f.params) |param| {
-            try params.append(arena, try resolveTypeName(param.ty_name, param.ty_span, diags));
+            try params.append(arena, try resolveType(arena, &table, param.ty, diags));
         }
 
-        const ret: types.Type = if (f.ret_ty_name) |name|
-            try resolveTypeName(name, f.ret_ty_span.?, diags)
+        const ret: types.Type = if (f.ret_ty) |ty_expr|
+            try resolveType(arena, &table, ty_expr, diags)
         else
             .void;
 
@@ -144,7 +267,7 @@ pub fn run(
             if (table.fns[index].ret != .void) {
                 try diags.err(
                     .bad_signature,
-                    f.ret_ty_span.?,
+                    f.ret_ty.?.spanOf(),
                     "`main` cannot return a value",
                     "remove the return type",
                     null,
@@ -243,4 +366,34 @@ test "entry index points at main even when it is not first" {
     var f = try resolveText(testing.allocator, "fn helper() {\n}\nfn main() {\n}\n");
     defer f.deinit();
     try testing.expectEqual(@as(?usize, 1), f.symbols.entry);
+}
+
+test "a recursive struct reports E0021" {
+    var f = try resolveText(testing.allocator, "struct Node {\n    next: Node\n}\nfn main() {\n}\n");
+    defer f.deinit();
+    try testing.expect(hasCode(f.diags, .recursive_struct));
+}
+
+test "a mutually recursive struct pair reports E0021" {
+    var f = try resolveText(testing.allocator, "struct A {\n    b: B\n}\nstruct B {\n    a: A\n}\nfn main() {\n}\n");
+    defer f.deinit();
+    try testing.expect(hasCode(f.diags, .recursive_struct));
+}
+
+test "a struct referring to another struct is fine" {
+    var f = try resolveText(testing.allocator, "struct Inner {\n    v: Int\n}\nstruct Outer {\n    i: Inner\n}\nfn main() {\n}\n");
+    defer f.deinit();
+    try testing.expect(!f.diags.hasErrors());
+}
+
+test "a duplicate struct name is reported" {
+    var f = try resolveText(testing.allocator, "struct P {\n    x: Int\n}\nstruct P {\n    y: Int\n}\nfn main() {\n}\n");
+    defer f.deinit();
+    try testing.expect(hasCode(f.diags, .duplicate_function));
+}
+
+test "an unknown type in a signature reports E0018" {
+    var f = try resolveText(testing.allocator, "fn f(a: Nope) {\n}\nfn main() {\n}\n");
+    defer f.deinit();
+    try testing.expect(hasCode(f.diags, .unknown_struct));
 }

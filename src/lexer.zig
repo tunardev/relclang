@@ -93,6 +93,10 @@ pub fn tokenize(
             '*' => .star,
             '/' => .slash,
             '%' => .percent,
+            '.' => .dot,
+            ';' => .semicolon,
+            '[' => .l_bracket,
+            ']' => .r_bracket,
             else => null,
         };
 
@@ -179,6 +183,7 @@ fn lexString(
 fn keywordOf(name: []const u8) ?Kind {
     if (std.mem.eql(u8, name, "fn")) return .kw_fn;
     if (std.mem.eql(u8, name, "let")) return .kw_let;
+    if (std.mem.eql(u8, name, "struct")) return .kw_struct;
     return null;
 }
 

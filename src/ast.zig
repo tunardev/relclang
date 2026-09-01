@@ -74,6 +74,10 @@ pub const Expr = union(enum) {
     call: Call,
     binary: Binary,
     unary: Unary,
+    struct_lit: StructLit,
+    field: FieldAccess,
+    array_lit: ArrayLit,
+    index: Index,
 
     pub fn spanOf(e: Expr) Span {
         return switch (e) {
@@ -83,6 +87,10 @@ pub const Expr = union(enum) {
             .call => |c| c.span,
             .binary => |b| b.span,
             .unary => |u| u.span,
+            .struct_lit => |s| s.span,
+            .field => |f| f.span,
+            .array_lit => |a| a.span,
+            .index => |x| x.span,
         };
     }
 };
@@ -90,8 +98,7 @@ pub const Expr = union(enum) {
 pub const Let = struct {
     name: []const u8,
     name_span: Span,
-    ty_name: ?[]const u8,
-    ty_span: ?Span,
+    ty: ?TypeExpr,
     init: Expr,
     span: Span,
 };
@@ -113,23 +120,78 @@ pub const Block = struct {
     span: Span,
 };
 
+pub const TypeExpr = union(enum) {
+    named: struct { name: []const u8, span: Span },
+    array: struct { elem: *const TypeExpr, len_text: []const u8, len_span: Span, span: Span },
+
+    pub fn spanOf(t: TypeExpr) Span {
+        return switch (t) {
+            .named => |n| n.span,
+            .array => |a| a.span,
+        };
+    }
+};
+
+pub const FieldDecl = struct {
+    name: []const u8,
+    name_span: Span,
+    ty: TypeExpr,
+};
+
+pub const StructDecl = struct {
+    name: []const u8,
+    name_span: Span,
+    fields: []const FieldDecl,
+    span: Span,
+};
+
+pub const FieldInit = struct {
+    name: []const u8,
+    name_span: Span,
+    value: Expr,
+};
+
+pub const StructLit = struct {
+    name: []const u8,
+    name_span: Span,
+    fields: []const FieldInit,
+    span: Span,
+};
+
+pub const FieldAccess = struct {
+    base: *const Expr,
+    field: []const u8,
+    field_span: Span,
+    span: Span,
+};
+
+pub const ArrayLit = struct {
+    elems: []const Expr,
+    span: Span,
+};
+
+pub const Index = struct {
+    base: *const Expr,
+    index: *const Expr,
+    span: Span,
+};
+
 pub const Param = struct {
     name: []const u8,
     name_span: Span,
-    ty_name: []const u8,
-    ty_span: Span,
+    ty: TypeExpr,
 };
 
 pub const Fn = struct {
     name: []const u8,
     name_span: Span,
     params: []const Param,
-    ret_ty_name: ?[]const u8,
-    ret_ty_span: ?Span,
+    ret_ty: ?TypeExpr,
     body: Block,
     span: Span,
 };
 
 pub const Program = struct {
     fns: []const Fn,
+    structs: []const StructDecl,
 };

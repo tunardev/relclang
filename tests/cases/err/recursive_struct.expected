@@ -1,0 +1,9 @@
+error[E0021]: `Node` contains itself
+
+  --> recursive_struct.rls:1:8
+   |
+ 1 | struct Node {
+   |        ^^^^ this struct would have infinite size
+   |
+help: store it behind a reference once references exist
+

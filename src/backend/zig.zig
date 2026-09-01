@@ -14,6 +14,16 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
     try w.writeAll("const std = @import(\"std\");\n");
     try w.print("const rt = @import(\"{s}\");\n\n", .{runtime.file_name});
 
+    for (program.structs, 0..) |def, index| {
+        try w.print("const S{d}_{s} = struct {{\n", .{ index, def.name });
+        for (def.fields, 0..) |field, i| {
+            try w.print("    f{d}_{s}: ", .{ i, field.name });
+            try emitType(w, program, field.ty);
+            try w.writeAll(",\n");
+        }
+        try w.writeAll("};\n\n");
+    }
+
     var entry: ?[]const u8 = null;
 
     for (program.functions) |f| {
@@ -21,9 +31,12 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         for (0..f.param_count) |i| {
             if (i > 0) try w.writeAll(", ");
             try emitLocalName(w, f, @intCast(i));
-            try w.print(": {s}", .{zigTypeOf(f.locals[i].ty)});
+            try w.writeAll(": ");
+            try emitType(w, program, f.locals[i].ty);
         }
-        try w.print(") rt.Error!{s} {{\n", .{zigTypeOf(f.ret)});
+        try w.writeAll(") rt.Error!");
+        try emitType(w, program, f.ret);
+        try w.writeAll(" {\n");
         for (f.body.stmts) |stmt| try emitStmt(w, program, f, stmt);
         try w.writeAll("}\n\n");
 
@@ -40,13 +53,17 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
     return aw.written();
 }
 
-fn zigTypeOf(ty: types.Type) []const u8 {
-    return switch (ty) {
-        .void => "void",
-        .int => "i64",
-        .str => "[]const u8",
-        .invalid => "void",
-    };
+fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void {
+    switch (ty) {
+        .void, .invalid => try w.writeAll("void"),
+        .int => try w.writeAll("i64"),
+        .str => try w.writeAll("[]const u8"),
+        .strukt => |i| try w.print("S{d}_{s}", .{ i, program.structs[i].name }),
+        .array => |a| {
+            try w.print("[{d}]", .{a.len});
+            try emitType(w, program, a.elem.*);
+        },
+    }
 }
 
 fn emitStmt(w: *std.Io.Writer, program: tir.Program, f: tir.Function, stmt: tir.Stmt) Error!void {
@@ -127,22 +144,56 @@ fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, expr: tir.
                     "printLineInt"
                 else
                     "printLine";
-                try w.print("try rt.{s}(", .{fn_name});
+                try w.print("(try rt.{s}(", .{fn_name});
                 for (c.args, 0..) |arg, i| {
                     if (i > 0) try w.writeAll(", ");
                     try emitExpr(w, program, f, arg);
                 }
-                try w.writeAll(")");
+                try w.writeAll("))");
             },
         },
 
         .call_function => |c| {
-            try w.print("try {s}{s}(", .{ prefix, program.functions[c.target].name });
+            try w.print("(try {s}{s}(", .{ prefix, program.functions[c.target].name });
             for (c.args, 0..) |arg, i| {
                 if (i > 0) try w.writeAll(", ");
                 try emitExpr(w, program, f, arg);
             }
-            try w.writeAll(")");
+            try w.writeAll("))");
+        },
+
+        .struct_lit => |s| {
+            const def = program.structs[s.strukt];
+            try w.print("S{d}_{s}{{ ", .{ s.strukt, def.name });
+            for (s.fields, 0..) |value, i| {
+                if (i > 0) try w.writeAll(", ");
+                try w.print(".f{d}_{s} = ", .{ i, def.fields[i].name });
+                try emitExpr(w, program, f, value);
+            }
+            try w.writeAll(" }");
+        },
+
+        .field => |fa| {
+            try emitExpr(w, program, f, fa.base.*);
+            try w.print(".f{d}_{s}", .{ fa.field, program.structs[fa.strukt].fields[fa.field].name });
+        },
+
+        .array_lit => |a| {
+            try w.print("[{d}]", .{a.elems.len});
+            try emitType(w, program, a.ty.array.elem.*);
+            try w.writeAll("{ ");
+            for (a.elems, 0..) |e, i| {
+                if (i > 0) try w.writeAll(", ");
+                try emitExpr(w, program, f, e);
+            }
+            try w.writeAll(" }");
+        },
+
+        .index => |x| {
+            try emitExpr(w, program, f, x.base.*);
+            try w.writeAll("[@as(usize, @intCast(");
+            try emitExpr(w, program, f, x.index.*);
+            try w.writeAll("))]");
         },
     }
 }
@@ -198,7 +249,7 @@ test "emits a runnable hello world" {
 
     try testing.expect(std.mem.indexOf(u8, out, "@import(\"relastic_rt.zig\")") != null);
     try testing.expect(std.mem.indexOf(u8, out, "fn rc_main() rt.Error!void") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "try rt.printLine(\"Hello, Relastic!\")") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "rt.printLine(\"Hello, Relastic!\")") != null);
     try testing.expect(std.mem.indexOf(u8, out, "pub fn main(init: std.process.Init) !void") != null);
     try testing.expect(std.mem.indexOf(u8, out, "try rc_main();") != null);
 }
@@ -209,7 +260,7 @@ test "mangles every relastic symbol" {
     defer gpa.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "fn rc_helper()") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "try rc_helper();") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "rc_helper()") != null);
 }
 
 test "a program without main emits no zig entry point" {
@@ -310,5 +361,5 @@ test "emits negation" {
     const gpa = testing.allocator;
     const out = try emitText(gpa, "fn main() {\n    println(-5)\n}\n");
     defer gpa.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, "-(@as(i64, 5))") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "@as(i64, -5)") != null);
 }

@@ -22,6 +22,11 @@ pub const Code = enum {
     unused_value,
     missing_return,
     bad_signature,
+    unknown_struct,
+    unknown_field,
+    missing_field,
+    recursive_struct,
+    not_indexable,
 
     pub fn id(c: Code) []const u8 {
         return switch (c) {
@@ -42,6 +47,11 @@ pub const Code = enum {
             .unused_value => "E0015",
             .missing_return => "E0016",
             .bad_signature => "E0017",
+            .unknown_struct => "E0018",
+            .unknown_field => "E0019",
+            .missing_field => "E0020",
+            .recursive_struct => "E0021",
+            .not_indexable => "E0022",
         };
     }
 };
@@ -374,7 +384,9 @@ test "every code has a distinct id" {
         .wrong_arg_count,  .type_mismatch,       .unexpected_char,
         .invalid_number,   .duplicate_binding,   .unknown_variable,
         .invalid_operand,  .integer_overflow,    .unused_value,
-        .missing_return,   .bad_signature,
+        .missing_return,   .bad_signature,      .unknown_struct,
+        .unknown_field,    .missing_field,      .recursive_struct,
+        .not_indexable,
     };
     for (codes, 0..) |a, i| {
         for (codes[i + 1 ..]) |b| {

@@ -1,0 +1,8 @@
+error[E0019]: `Point` has no field `z`
+
+  --> unknown_field.rls:8:15
+   |
+ 8 |     println(p.z)
+   |               ^ unknown field
+   |
+

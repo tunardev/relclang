@@ -1,0 +1,23 @@
+struct Row {
+    cells: [Int; 3]
+}
+
+fn first(a: [Int; 3]) -> Int {
+    a[0]
+}
+
+fn main() {
+    let nums = [3, 1, 4, 1, 5]
+    println(nums[0] + nums[4])
+    println(nums[2])
+
+    let grid = [[1, 2], [3, 4]]
+    println(grid[1][0])
+
+    let r = Row { cells: [7, 8, 9] }
+    println(r.cells[2])
+    println(first(r.cells))
+
+    let i = 3
+    println(nums[i])
+}

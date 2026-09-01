@@ -1,0 +1,8 @@
+error[E0022]: index 5 is out of bounds
+
+  --> index_bounds.rls:3:15
+   |
+ 3 |     println(a[5])
+   |               ^ the array has 2 elements
+   |
+

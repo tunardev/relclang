@@ -1,9 +1,9 @@
-error[E0008]: unknown type `Number`
+error[E0018]: unknown type `Number`
 
   --> unknown_type.rls:2:12
    |
  2 |     let x: Number = 10
    |            ^^^^^^ not a known type
    |
-help: the types are `Int`, `Str` and `Void`
+help: the built in types are `Int`, `Str` and `Void`
 

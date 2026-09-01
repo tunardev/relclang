@@ -7,19 +7,32 @@ currently generates Zig, which is then compiled to a binary.
 
 ## Status
 
-Very early. Right now it handles functions with parameters and return
-types, `let` bindings, integers, strings and arithmetic:
+Very early. Right now it handles functions, `let` bindings, integers,
+strings, arithmetic, structs and fixed size arrays:
 
-    fn add(a: Int, b: Int) -> Int {
-        a + b
+    struct Point {
+        x: Int
+        y: Int
+    }
+
+    fn dist2(a: Point, b: Point) -> Int {
+        let dx = a.x - b.x
+        let dy = a.y - b.y
+        dx * dx + dy * dy
     }
 
     fn main() {
-        println(add(3, 4))
+        let a = Point { x: 10, y: 20 }
+        let b = Point { x: 15, y: 25 }
+        println(dist2(a, b))
+
+        let nums = [3, 1, 4]
+        println(nums[0])
     }
 
 The last line of a function body is its return value. There is no
-`return` keyword yet.
+`return` keyword yet. Arrays have a fixed length that is part of their
+type, written `[Int; 3]`. Slices do not exist yet.
 
 There is one integer type, `Int`, which is 64 bits and signed. Division
 truncates toward zero and dividing by zero stops the program. Bindings

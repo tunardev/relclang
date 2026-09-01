@@ -43,31 +43,113 @@ const Parser = struct {
 
     fn parseProgram(p: *Parser) Error!ast.Program {
         var fns: std.ArrayList(ast.Fn) = .empty;
+        var structs: std.ArrayList(ast.StructDecl) = .empty;
 
         while (true) {
             p.skipNewlines();
             if (p.peek() == .eof) break;
 
-            if (p.peek() != .kw_fn) {
-                try p.diags.err(
-                    .unexpected_token,
-                    p.current().span,
-                    "expected a function definition",
-                    "only `fn` items are allowed at the top level",
-                    null,
-                );
-                p.recoverToTopLevel();
-                continue;
+            switch (p.peek()) {
+                .kw_fn => if (try p.parseFn()) |f| try fns.append(p.arena, f),
+                .kw_struct => if (try p.parseStruct()) |d| try structs.append(p.arena, d),
+                else => {
+                    try p.diags.err(
+                        .unexpected_token,
+                        p.current().span,
+                        "expected a top level definition",
+                        "only `fn` and `struct` are allowed here",
+                        null,
+                    );
+                    p.recoverToTopLevel();
+                },
             }
-
-            if (try p.parseFn()) |f| try fns.append(p.arena, f);
         }
 
-        return .{ .fns = try fns.toOwnedSlice(p.arena) };
+        return .{
+            .fns = try fns.toOwnedSlice(p.arena),
+            .structs = try structs.toOwnedSlice(p.arena),
+        };
     }
 
     fn recoverToTopLevel(p: *Parser) void {
-        while (p.peek() != .eof and p.peek() != .kw_fn) p.pos += 1;
+        while (p.peek() != .eof and p.peek() != .kw_fn and p.peek() != .kw_struct) p.pos += 1;
+    }
+
+    fn parseStruct(p: *Parser) Error!?ast.StructDecl {
+        const kw = p.advance();
+
+        const name_tok = try p.expect(.ident, "expected a struct name", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        p.skipNewlines();
+        _ = try p.expect(.l_brace, "expected `{`", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        var fields: std.ArrayList(ast.FieldDecl) = .empty;
+
+        while (true) {
+            p.skipNewlines();
+            if (p.peek() == .r_brace or p.peek() == .eof) break;
+
+            const before = p.pos;
+
+            const fname = try p.expect(.ident, "expected a field name", null) orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+            _ = try p.expect(.colon, "expected `:`", "every field needs a type") orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+            const fty = try p.parseType() orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+
+            try fields.append(p.arena, .{ .name = fname.value, .name_span = fname.span, .ty = fty });
+
+            if (p.peek() == .comma) _ = p.advance();
+            if (p.pos == before) p.pos += 1;
+        }
+
+        const close = try p.expect(.r_brace, "expected `}`", "the struct body is never closed") orelse p.current();
+
+        return .{
+            .name = name_tok.value,
+            .name_span = name_tok.span,
+            .fields = try fields.toOwnedSlice(p.arena),
+            .span = Span.merge(kw.span, close.span),
+        };
+    }
+
+    fn parseType(p: *Parser) Error!?ast.TypeExpr {
+        if (p.peek() == .l_bracket) {
+            const open = p.advance();
+            const elem = try p.parseType() orelse return null;
+            _ = try p.expect(.semicolon, "expected `;`", "an array type looks like `[Int; 3]`") orelse return null;
+            const len_tok = try p.expect(.int, "expected an array length", null) orelse return null;
+            const close = try p.expect(.r_bracket, "expected `]`", null) orelse return null;
+
+            const elem_ptr = try p.arena.create(ast.TypeExpr);
+            elem_ptr.* = elem;
+
+            return .{ .array = .{
+                .elem = elem_ptr,
+                .len_text = len_tok.value,
+                .len_span = len_tok.span,
+                .span = Span.merge(open.span, close.span),
+            } };
+        }
+
+        const t = try p.expect(.ident, "expected a type name", null) orelse return null;
+        return .{ .named = .{ .name = t.value, .span = t.span } };
     }
 
     fn parseFn(p: *Parser) Error!?ast.Fn {
@@ -93,15 +175,14 @@ const Parser = struct {
                     p.recoverToTopLevel();
                     return null;
                 };
-                const pty = try p.expect(.ident, "expected a type name", null) orelse {
+                const pty = try p.parseType() orelse {
                     p.recoverToTopLevel();
                     return null;
                 };
                 try params.append(p.arena, .{
                     .name = pname.value,
                     .name_span = pname.span,
-                    .ty_name = pty.value,
-                    .ty_span = pty.span,
+                    .ty = pty,
                 });
                 if (p.peek() != .comma) break;
                 _ = p.advance();
@@ -113,16 +194,13 @@ const Parser = struct {
             return null;
         };
 
-        var ret_ty_name: ?[]const u8 = null;
-        var ret_ty_span: ?Span = null;
+        var ret_ty: ?ast.TypeExpr = null;
         if (p.peek() == .arrow) {
             _ = p.advance();
-            const rty = try p.expect(.ident, "expected a return type", null) orelse {
+            ret_ty = try p.parseType() orelse {
                 p.recoverToTopLevel();
                 return null;
             };
-            ret_ty_name = rty.value;
-            ret_ty_span = rty.span;
         }
 
         p.skipNewlines();
@@ -136,8 +214,7 @@ const Parser = struct {
             .name = name_tok.value,
             .name_span = name_tok.span,
             .params = try params.toOwnedSlice(p.arena),
-            .ret_ty_name = ret_ty_name,
-            .ret_ty_span = ret_ty_span,
+            .ret_ty = ret_ty,
             .body = body,
             .span = Span.merge(kw.span, body.span),
         };
@@ -196,13 +273,10 @@ const Parser = struct {
 
         const name_tok = try p.expect(.ident, "expected a variable name", null) orelse return null;
 
-        var ty_name: ?[]const u8 = null;
-        var ty_span: ?Span = null;
+        var ty: ?ast.TypeExpr = null;
         if (p.peek() == .colon) {
             _ = p.advance();
-            const ty_tok = try p.expect(.ident, "expected a type name", null) orelse return null;
-            ty_name = ty_tok.value;
-            ty_span = ty_tok.span;
+            ty = try p.parseType() orelse return null;
         }
 
         _ = try p.expect(.equals, "expected `=`", "a `let` binding needs an initial value") orelse return null;
@@ -212,8 +286,7 @@ const Parser = struct {
         return .{ .let = .{
             .name = name_tok.value,
             .name_span = name_tok.span,
-            .ty_name = ty_name,
-            .ty_span = ty_span,
+            .ty = ty,
             .init = init_expr,
             .span = Span.merge(kw.span, init_expr.spanOf()),
         } };
@@ -262,7 +335,7 @@ const Parser = struct {
     }
 
     fn parseUnary(p: *Parser) Error!?ast.Expr {
-        if (p.peek() != .minus) return p.parsePrimary();
+        if (p.peek() != .minus) return p.parsePostfix();
 
         const op_tok = p.advance();
         const operand = try p.parseUnary() orelse return null;
@@ -278,8 +351,108 @@ const Parser = struct {
         } };
     }
 
+    fn parsePostfix(p: *Parser) Error!?ast.Expr {
+        var expr = try p.parsePrimary() orelse return null;
+
+        while (true) {
+            switch (p.peek()) {
+                .dot => {
+                    _ = p.advance();
+                    const field = try p.expect(.ident, "expected a field name", null) orelse return null;
+
+                    const base = try p.arena.create(ast.Expr);
+                    base.* = expr;
+                    const merged = Span.merge(expr.spanOf(), field.span);
+
+                    expr = .{ .field = .{
+                        .base = base,
+                        .field = field.value,
+                        .field_span = field.span,
+                        .span = merged,
+                    } };
+                },
+                .l_bracket => {
+                    _ = p.advance();
+                    const idx = try p.parseExpr() orelse return null;
+                    const close = try p.expect(.r_bracket, "expected `]`", "add `]` to close the index") orelse return null;
+
+                    const base = try p.arena.create(ast.Expr);
+                    base.* = expr;
+                    const idx_ptr = try p.arena.create(ast.Expr);
+                    idx_ptr.* = idx;
+                    const merged = Span.merge(expr.spanOf(), close.span);
+
+                    expr = .{ .index = .{
+                        .base = base,
+                        .index = idx_ptr,
+                        .span = merged,
+                    } };
+                },
+                else => return expr,
+            }
+        }
+    }
+
+    fn parseStructLit(p: *Parser) Error!?ast.Expr {
+        const name = p.advance();
+        _ = p.advance();
+
+        var fields: std.ArrayList(ast.FieldInit) = .empty;
+
+        while (true) {
+            p.skipNewlines();
+            if (p.peek() == .r_brace or p.peek() == .eof) break;
+
+            const fname = try p.expect(.ident, "expected a field name", null) orelse return null;
+            _ = try p.expect(.colon, "expected `:`", "a field looks like `name: value`") orelse return null;
+            const value = try p.parseExpr() orelse return null;
+
+            try fields.append(p.arena, .{ .name = fname.value, .name_span = fname.span, .value = value });
+
+            p.skipNewlines();
+            if (p.peek() != .comma) break;
+            _ = p.advance();
+        }
+
+        p.skipNewlines();
+        const close = try p.expect(.r_brace, "expected `}`", "add `}` to close the struct literal") orelse return null;
+
+        return .{ .struct_lit = .{
+            .name = name.value,
+            .name_span = name.span,
+            .fields = try fields.toOwnedSlice(p.arena),
+            .span = Span.merge(name.span, close.span),
+        } };
+    }
+
     fn parsePrimary(p: *Parser) Error!?ast.Expr {
         switch (p.peek()) {
+            .l_bracket => {
+                const open = p.advance();
+                var elems: std.ArrayList(ast.Expr) = .empty;
+
+                p.skipNewlines();
+                if (p.peek() != .r_bracket) {
+                    while (true) {
+                        p.skipNewlines();
+                        const e = try p.parseExpr() orelse return null;
+                        try elems.append(p.arena, e);
+                        p.skipNewlines();
+                        if (p.peek() != .comma) break;
+                        _ = p.advance();
+                        p.skipNewlines();
+                        if (p.peek() == .r_bracket) break;
+                    }
+                }
+
+                p.skipNewlines();
+                const close = try p.expect(.r_bracket, "expected `]`", "add `]` to close the array") orelse return null;
+
+                return .{ .array_lit = .{
+                    .elems = try elems.toOwnedSlice(p.arena),
+                    .span = Span.merge(open.span, close.span),
+                } };
+            },
             .string => {
                 const t = p.advance();
                 return .{ .string = .{ .value = t.value, .span = t.span } };
@@ -296,6 +469,9 @@ const Parser = struct {
             },
             .ident => {
                 if (p.tokens[p.pos + 1].kind == .l_paren) return try p.parseCall();
+                if (p.tokens[p.pos + 1].kind == .l_brace and startsUpper(p.current().value)) {
+                    return try p.parseStructLit();
+                }
                 const t = p.advance();
                 return .{ .var_ref = .{ .name = t.value, .span = t.span } };
             },
@@ -337,6 +513,10 @@ const Parser = struct {
         } };
     }
 };
+
+fn startsUpper(name: []const u8) bool {
+    return name.len > 0 and name[0] >= 'A' and name[0] <= 'Z';
+}
 
 pub fn parse(
     arena: std.mem.Allocator,

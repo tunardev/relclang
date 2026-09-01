@@ -1,0 +1,7 @@
+struct Node {
+    next: Node
+    value: Int
+}
+
+fn main() {
+}

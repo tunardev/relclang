@@ -57,6 +57,10 @@ const Fn = struct {
         return slot;
     }
 
+    fn tyName(f: *Fn, ty: Type) Error![]const u8 {
+        return f.symbols.typeName(f.diags.arena.allocator(), ty) catch error.OutOfMemory;
+    }
+
     fn box(f: *Fn, e: tir.Expr) Error!*const tir.Expr {
         const ptr = try f.arena.create(tir.Expr);
         ptr.* = e;
@@ -112,12 +116,15 @@ pub fn run(
 
             if (is_last and info.ret != .void and lowered == .expr) {
                 const ty = lowered.expr.typeOf();
-                if (ty != .invalid and ty != info.ret) {
+                if (!ty.isInvalid() and !Type.eql(ty, info.ret)) {
                     try diags.err(
                         .missing_return,
                         lowered.expr.spanOf(),
                         "the final expression does not match the return type",
-                        try diags.fmt("expected `{s}`, found `{s}`", .{ info.ret.name(), ty.name() }),
+                        try diags.fmt("expected `{s}`, found `{s}`", .{
+                            try symbols.typeName(diags.arena.allocator(), info.ret),
+                            try symbols.typeName(diags.arena.allocator(), ty),
+                        }),
                         null,
                     );
                 }
@@ -127,11 +134,11 @@ pub fn run(
 
             if (lowered == .expr) {
                 const ty = lowered.expr.typeOf();
-                if (ty != .void and ty != .invalid) {
+                if (ty != .void and !ty.isInvalid()) {
                     try diags.err(
                         .unused_value,
                         lowered.expr.spanOf(),
-                        try diags.fmt("this `{s}` value is not used", .{ty.name()}),
+                        try diags.fmt("this `{s}` value is not used", .{try symbols.typeName(diags.arena.allocator(), ty)}),
                         "the value is discarded",
                         "bind it with `let`, or remove it",
                     );
@@ -146,8 +153,11 @@ pub fn run(
             if (!returns) {
                 try diags.err(
                     .missing_return,
-                    f.ret_ty_span orelse f.name_span,
-                    try diags.fmt("`{s}` must end with a `{s}` value", .{ f.name, info.ret.name() }),
+                    if (f.ret_ty) |t| t.spanOf() else f.name_span,
+                    try diags.fmt("`{s}` must end with a `{s}` value", .{
+                        f.name,
+                        try symbols.typeName(diags.arena.allocator(), info.ret),
+                    }),
                     "no value is returned",
                     "the last line of the body is its return value",
                 );
@@ -165,7 +175,10 @@ pub fn run(
         });
     }
 
-    return .{ .functions = try functions.toOwnedSlice(arena) };
+    return .{
+        .functions = try functions.toOwnedSlice(arena),
+        .structs = symbols.structs,
+    };
 }
 
 fn lowerStmt(f: *Fn, stmt: ast.Stmt) Error!?tir.Stmt {
@@ -175,24 +188,18 @@ fn lowerStmt(f: *Fn, stmt: ast.Stmt) Error!?tir.Stmt {
             const init_expr = try lowerExpr(f, l.init);
             var ty = init_expr.typeOf();
 
-            if (l.ty_name) |name| {
-                const annotated = typecheck.typeFromName(name) orelse blk: {
-                    try f.diags.err(
-                        .type_mismatch,
-                        l.ty_span.?,
-                        try f.diags.fmt("unknown type `{s}`", .{name}),
-                        "not a known type",
-                        "the types are `Int`, `Str` and `Void`",
-                    );
-                    break :blk Type.invalid;
-                };
+            if (l.ty) |ty_expr| {
+                const annotated = try resolveLocalType(f, ty_expr);
 
-                if (annotated != .invalid and ty != .invalid and annotated != ty) {
+                if (!annotated.isInvalid() and !ty.isInvalid() and !Type.eql(annotated, ty)) {
                     try f.diags.err(
                         .type_mismatch,
                         l.init.spanOf(),
                         "type does not match the annotation",
-                        try f.diags.fmt("expected `{s}`, found `{s}`", .{ annotated.name(), ty.name() }),
+                        try f.diags.fmt("expected `{s}`, found `{s}`", .{
+                            try f.tyName(annotated),
+                            try f.tyName(ty),
+                        }),
                         null,
                     );
                 }
@@ -230,6 +237,116 @@ fn lowerStmt(f: *Fn, stmt: ast.Stmt) Error!?tir.Stmt {
             } };
         },
     }
+}
+
+fn resolveLocalType(f: *Fn, expr: ast.TypeExpr) Error!Type {
+    switch (expr) {
+        .named => |n| {
+            if (typecheck.typeFromName(n.name)) |primitive| return primitive;
+            if (f.symbols.structIndex(n.name)) |index| return .{ .strukt = index };
+            try f.diags.err(
+                .unknown_struct,
+                n.span,
+                try f.diags.fmt("unknown type `{s}`", .{n.name}),
+                "not a known type",
+                "the built in types are `Int`, `Str` and `Void`",
+            );
+            return .invalid;
+        },
+        .array => |a| {
+            const elem = try resolveLocalType(f, a.elem.*);
+            const len = std.fmt.parseInt(u64, a.len_text, 10) catch {
+                try f.diags.err(.integer_overflow, a.len_span, "array length is out of range", "not a valid length", null);
+                return .invalid;
+            };
+            const ptr = try f.arena.create(Type);
+            ptr.* = elem;
+            return .{ .array = .{ .elem = ptr, .len = len } };
+        },
+    }
+}
+
+fn lowerStructLit(f: *Fn, s: ast.StructLit) Error!tir.Expr {
+    const index = f.symbols.structIndex(s.name) orelse {
+        try f.diags.err(
+            .unknown_struct,
+            s.name_span,
+            try f.diags.fmt("unknown struct `{s}`", .{s.name}),
+            "not defined anywhere",
+            null,
+        );
+        for (s.fields) |field| _ = try lowerExpr(f, field.value);
+        return .{ .struct_lit = .{ .strukt = 0, .fields = &.{}, .ty = .invalid, .span = s.span } };
+    };
+
+    const def = f.symbols.structs[index];
+    const slots = try f.arena.alloc(tir.Expr, def.fields.len);
+    const filled = try f.gpa.alloc(bool, def.fields.len);
+    defer f.gpa.free(filled);
+    @memset(filled, false);
+
+    for (def.fields, 0..) |field, i| {
+        slots[i] = .{ .int_const = .{ .value = 0, .ty = field.ty, .span = s.span } };
+    }
+
+    for (s.fields) |init_field| {
+        const value = try lowerExpr(f, init_field.value);
+
+        const slot = def.fieldIndex(init_field.name) orelse {
+            try f.diags.err(
+                .unknown_field,
+                init_field.name_span,
+                try f.diags.fmt("`{s}` has no field `{s}`", .{ def.name, init_field.name }),
+                "unknown field",
+                null,
+            );
+            continue;
+        };
+
+        if (filled[slot]) {
+            try f.diags.err(
+                .duplicate_binding,
+                init_field.name_span,
+                try f.diags.fmt("field `{s}` is set twice", .{init_field.name}),
+                "duplicate field",
+                null,
+            );
+        }
+        filled[slot] = true;
+
+        const want = def.fields[slot].ty;
+        const got = value.typeOf();
+        if (!got.isInvalid() and !Type.eql(want, got)) {
+            try f.diags.err(
+                .type_mismatch,
+                init_field.value.spanOf(),
+                "field type mismatch",
+                try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(want), try f.tyName(got) }),
+                null,
+            );
+        }
+
+        slots[slot] = value;
+    }
+
+    for (def.fields, 0..) |field, i| {
+        if (!filled[i]) {
+            try f.diags.err(
+                .missing_field,
+                s.span,
+                try f.diags.fmt("missing field `{s}` in `{s}`", .{ field.name, def.name }),
+                "this field is never set",
+                null,
+            );
+        }
+    }
+
+    return .{ .struct_lit = .{
+        .strukt = index,
+        .fields = slots,
+        .ty = .{ .strukt = index },
+        .span = s.span,
+    } };
 }
 
 fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
@@ -273,13 +390,27 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
                     u.span,
                     try f.diags.fmt("`{s}` cannot be applied to `{s}`", .{
                         u.op.symbol(),
-                        operand.typeOf().name(),
+                        try f.tyName(operand.typeOf()),
                     }),
                     "invalid operand",
                     null,
                 );
                 break :blk Type.invalid;
             };
+            if (u.op == .neg and operand == .int_const and ty == .int) {
+                const folded = std.math.negate(operand.int_const.value) catch {
+                    try f.diags.err(
+                        .integer_overflow,
+                        u.span,
+                        "negated literal is out of range",
+                        "does not fit in `Int`",
+                        null,
+                    );
+                    return .{ .int_const = .{ .value = 0, .ty = .invalid, .span = u.span } };
+                };
+                return .{ .int_const = .{ .value = folded, .ty = .int, .span = u.span } };
+            }
+
             return .{ .unary = .{
                 .op = unOpOf(u.op),
                 .operand = try f.box(operand),
@@ -297,8 +428,8 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
                     b.op_span,
                     try f.diags.fmt("`{s}` cannot be applied to `{s}` and `{s}`", .{
                         b.op.symbol(),
-                        lhs.typeOf().name(),
-                        rhs.typeOf().name(),
+                        try f.tyName(lhs.typeOf()),
+                        try f.tyName(rhs.typeOf()),
                     }),
                     "invalid operands",
                     if (lhs.typeOf() == .str and rhs.typeOf() == .str)
@@ -318,6 +449,140 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         },
 
         .call => |c| return lowerCall(f, c),
+
+        .struct_lit => |s| return lowerStructLit(f, s),
+
+        .field => |fa| {
+            const base = try lowerExpr(f, fa.base.*);
+            const base_ty = base.typeOf();
+
+            if (base_ty.isInvalid()) {
+                return .{ .field = .{ .base = try f.box(base), .strukt = 0, .field = 0, .ty = .invalid, .span = fa.span } };
+            }
+
+            if (base_ty != .strukt) {
+                try f.diags.err(
+                    .unknown_field,
+                    fa.field_span,
+                    try f.diags.fmt("`{s}` has no fields", .{try f.tyName(base_ty)}),
+                    "only structs have fields",
+                    null,
+                );
+                return .{ .field = .{ .base = try f.box(base), .strukt = 0, .field = 0, .ty = .invalid, .span = fa.span } };
+            }
+
+            const index = base_ty.strukt;
+            const def = f.symbols.structs[index];
+
+            const slot = def.fieldIndex(fa.field) orelse {
+                try f.diags.err(
+                    .unknown_field,
+                    fa.field_span,
+                    try f.diags.fmt("`{s}` has no field `{s}`", .{ def.name, fa.field }),
+                    "unknown field",
+                    null,
+                );
+                return .{ .field = .{ .base = try f.box(base), .strukt = index, .field = 0, .ty = .invalid, .span = fa.span } };
+            };
+
+            return .{ .field = .{
+                .base = try f.box(base),
+                .strukt = index,
+                .field = slot,
+                .ty = def.fields[slot].ty,
+                .span = fa.span,
+            } };
+        },
+
+        .array_lit => |a| {
+            var elems: std.ArrayList(tir.Expr) = .empty;
+            for (a.elems) |e| try elems.append(f.arena, try lowerExpr(f, e));
+            const lowered = try elems.toOwnedSlice(f.arena);
+
+            if (lowered.len == 0) {
+                try f.diags.err(
+                    .invalid_operand,
+                    a.span,
+                    "cannot infer the type of an empty array",
+                    "no elements to infer from",
+                    "annotate it, as in `let a: [Int; 0] = []`",
+                );
+                return .{ .array_lit = .{ .elems = lowered, .ty = .invalid, .span = a.span } };
+            }
+
+            const first = lowered[0].typeOf();
+            for (lowered[1..], 1..) |e, i| {
+                const got = e.typeOf();
+                if (!got.isInvalid() and !first.isInvalid() and !Type.eql(first, got)) {
+                    try f.diags.err(
+                        .type_mismatch,
+                        a.elems[i].spanOf(),
+                        "array elements must all have the same type",
+                        try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(first), try f.tyName(got) }),
+                        null,
+                    );
+                }
+            }
+
+            const elem_ptr = try f.arena.create(Type);
+            elem_ptr.* = first;
+
+            return .{ .array_lit = .{
+                .elems = lowered,
+                .ty = .{ .array = .{ .elem = elem_ptr, .len = lowered.len } },
+                .span = a.span,
+            } };
+        },
+
+        .index => |x| {
+            const base = try lowerExpr(f, x.base.*);
+            const idx = try lowerExpr(f, x.index.*);
+
+            const idx_ty = idx.typeOf();
+            if (!idx_ty.isInvalid() and idx_ty != .int) {
+                try f.diags.err(
+                    .type_mismatch,
+                    x.index.spanOf(),
+                    "an index must be an `Int`",
+                    try f.diags.fmt("expected `Int`, found `{s}`", .{try f.tyName(idx_ty)}),
+                    null,
+                );
+            }
+
+            const base_ty = base.typeOf();
+            if (base_ty != .array) {
+                if (!base_ty.isInvalid()) {
+                    try f.diags.err(
+                        .not_indexable,
+                        x.span,
+                        try f.diags.fmt("`{s}` cannot be indexed", .{try f.tyName(base_ty)}),
+                        "only arrays can be indexed",
+                        null,
+                    );
+                }
+                return .{ .index = .{ .base = try f.box(base), .index = try f.box(idx), .ty = .invalid, .span = x.span } };
+            }
+
+            if (idx == .int_const and idx.int_const.ty == .int) {
+                const value = idx.int_const.value;
+                if (value < 0 or @as(u64, @intCast(value)) >= base_ty.array.len) {
+                    try f.diags.err(
+                        .not_indexable,
+                        x.index.spanOf(),
+                        try f.diags.fmt("index {d} is out of bounds", .{value}),
+                        try f.diags.fmt("the array has {d} elements", .{base_ty.array.len}),
+                        null,
+                    );
+                }
+            }
+
+            return .{ .index = .{
+                .base = try f.box(base),
+                .index = try f.box(idx),
+                .ty = base_ty.array.elem.*,
+                .span = x.span,
+            } };
+        },
     }
 }
 
@@ -360,12 +625,12 @@ fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
             } else {
                 for (lowered, 0..) |arg, i| {
                     const ty = arg.typeOf();
-                    if (ty != .invalid and !b.accepts(i, ty)) {
+                    if (!ty.isInvalid() and !b.accepts(i, ty)) {
                         try f.diags.err(
                             .type_mismatch,
                             arg.spanOf(),
                             "argument type mismatch",
-                            try f.diags.fmt("expected {s}, found `{s}`", .{ b.describeParam(i), ty.name() }),
+                            try f.diags.fmt("expected {s}, found `{s}`", .{ b.describeParam(i), try f.tyName(ty) }),
                             null,
                         );
                     }
@@ -395,12 +660,12 @@ fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
             } else {
                 for (lowered, 0..) |arg, i| {
                     const ty = arg.typeOf();
-                    if (ty != .invalid and ty != info.params[i]) {
+                    if (!ty.isInvalid() and !Type.eql(ty, info.params[i])) {
                         try f.diags.err(
                             .type_mismatch,
                             arg.spanOf(),
                             "argument type mismatch",
-                            try f.diags.fmt("expected `{s}`, found `{s}`", .{ info.params[i].name(), ty.name() }),
+                            try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(info.params[i]), try f.tyName(ty) }),
                             null,
                         );
                     }
@@ -719,4 +984,112 @@ test "a str parameter round trips" {
     defer l.deinit();
     try testing.expect(!l.diags.hasErrors());
     try testing.expectEqual(types.Type.str, l.program.functions[0].locals[0].ty);
+}
+
+test "a struct literal fills fields in declaration order" {
+    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n    y: Int\n}\nfn main() {\n    let p = P { y: 2, x: 1 }\n    println(p.x)\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+    const lit = l.program.functions[0].body.stmts[0].let.init.struct_lit;
+    try testing.expectEqual(@as(i64, 1), lit.fields[0].int_const.value);
+    try testing.expectEqual(@as(i64, 2), lit.fields[1].int_const.value);
+}
+
+test "field access resolves to a slot index and type" {
+    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n    y: Str\n}\nfn main() {\n    let p = P { x: 1, y: \"a\" }\n    println(p.y)\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+    const access = l.program.functions[0].body.stmts[1].expr.call_builtin.args[0].field;
+    try testing.expectEqual(@as(u32, 1), access.field);
+    try testing.expect(types.Type.eql(.str, access.ty));
+}
+
+test "an array literal infers its element type and length" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1, 2, 3]\n    println(a[0])\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+    const ty = l.program.functions[0].locals[0].ty;
+    try testing.expect(ty == .array);
+    try testing.expectEqual(@as(u64, 3), ty.array.len);
+    try testing.expect(types.Type.eql(.int, ty.array.elem.*));
+}
+
+test "indexing yields the element type" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [\"x\"]\n    println(a[0])\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+    const idx = l.program.functions[0].body.stmts[1].expr.call_builtin.args[0].index;
+    try testing.expect(types.Type.eql(.str, idx.ty));
+}
+
+test "an unknown field reports E0019" {
+    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n}\nfn main() {\n    let p = P { x: 1 }\n    println(p.z)\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.unknown_field));
+}
+
+test "a missing field reports E0020" {
+    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n    y: Int\n}\nfn main() {\n    let p = P { x: 1 }\n    println(p.x)\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.missing_field));
+}
+
+test "a duplicated field in a literal reports E0011" {
+    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n}\nfn main() {\n    let p = P { x: 1, x: 2 }\n    println(p.x)\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.duplicate_binding));
+}
+
+test "a constant out of bounds index reports E0022" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1, 2]\n    println(a[5])\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.not_indexable));
+}
+
+test "a negative constant index reports E0022" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1, 2]\n    println(a[-1])\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.not_indexable));
+}
+
+test "indexing a non array reports E0022" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let n = 3\n    println(n[0])\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.not_indexable));
+}
+
+test "a non int index reports E0008" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1]\n    println(a[\"x\"])\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.type_mismatch));
+}
+
+test "mixed array element types report E0008" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let a = [1, \"two\"]\n    println(a[0])\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.type_mismatch));
+}
+
+test "an empty array literal cannot be inferred" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let a = []\n    println(a[0])\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.invalid_operand));
+}
+
+test "printing a struct reports a type mismatch" {
+    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n}\nfn main() {\n    let p = P { x: 1 }\n    println(p)\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.type_mismatch));
+}
+
+test "nested arrays type correctly" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    let g = [[1, 2], [3, 4]]\n    println(g[0][1])\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+    const ty = l.program.functions[0].locals[0].ty;
+    try testing.expectEqual(@as(u64, 2), ty.array.len);
+    try testing.expectEqual(@as(u64, 2), ty.array.elem.array.len);
 }

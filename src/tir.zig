@@ -59,6 +59,34 @@ pub const CallBuiltin = struct {
     span: Span,
 };
 
+pub const StructLit = struct {
+    strukt: u32,
+    fields: []const Expr,
+    ty: types.Type,
+    span: Span,
+};
+
+pub const FieldAccess = struct {
+    base: *const Expr,
+    strukt: u32,
+    field: u32,
+    ty: types.Type,
+    span: Span,
+};
+
+pub const ArrayLit = struct {
+    elems: []const Expr,
+    ty: types.Type,
+    span: Span,
+};
+
+pub const Index = struct {
+    base: *const Expr,
+    index: *const Expr,
+    ty: types.Type,
+    span: Span,
+};
+
 pub const CallFunction = struct {
     target: usize,
     args: []const Expr,
@@ -74,6 +102,10 @@ pub const Expr = union(enum) {
     unary: Unary,
     call_builtin: CallBuiltin,
     call_function: CallFunction,
+    struct_lit: StructLit,
+    field: FieldAccess,
+    array_lit: ArrayLit,
+    index: Index,
 
     pub fn typeOf(e: Expr) types.Type {
         return switch (e) {
@@ -84,6 +116,10 @@ pub const Expr = union(enum) {
             .unary => |u| u.ty,
             .call_builtin => |c| c.ty,
             .call_function => |c| c.ty,
+            .struct_lit => |s| s.ty,
+            .field => |f| f.ty,
+            .array_lit => |a| a.ty,
+            .index => |x| x.ty,
         };
     }
 
@@ -96,6 +132,10 @@ pub const Expr = union(enum) {
             .unary => |u| u.span,
             .call_builtin => |c| c.span,
             .call_function => |c| c.span,
+            .struct_lit => |s| s.span,
+            .field => |f| f.span,
+            .array_lit => |a| a.span,
+            .index => |x| x.span,
         };
     }
 };
@@ -135,4 +175,5 @@ pub const Function = struct {
 
 pub const Program = struct {
     functions: []const Function,
+    structs: []const types.StructDef,
 };
