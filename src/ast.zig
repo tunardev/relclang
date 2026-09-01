@@ -113,9 +113,19 @@ pub const Block = struct {
     span: Span,
 };
 
+pub const Param = struct {
+    name: []const u8,
+    name_span: Span,
+    ty_name: []const u8,
+    ty_span: Span,
+};
+
 pub const Fn = struct {
     name: []const u8,
     name_span: Span,
+    params: []const Param,
+    ret_ty_name: ?[]const u8,
+    ret_ty_span: ?Span,
     body: Block,
     span: Span,
 };

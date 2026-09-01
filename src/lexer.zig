@@ -74,6 +74,12 @@ pub fn tokenize(
             continue;
         }
 
+        if (c == '-' and i + 1 < text.len and text[i + 1] == '>') {
+            try out.append(arena, .{ .kind = .arrow, .span = .{ .start = i, .end = i + 2 } });
+            i += 2;
+            continue;
+        }
+
         const punct: ?Kind = switch (c) {
             '(' => .l_paren,
             ')' => .r_paren,

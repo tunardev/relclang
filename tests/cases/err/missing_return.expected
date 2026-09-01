@@ -1,0 +1,8 @@
+error[E0016]: the final expression does not match the return type
+
+  --> missing_return.rls:2:5
+   |
+ 2 |     println("no value here")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ expected `Int`, found `Void`
+   |
+

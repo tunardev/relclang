@@ -110,6 +110,7 @@ pub const LetDecl = struct {
 pub const Stmt = union(enum) {
     expr: Expr,
     let: LetDecl,
+    ret_value: Expr,
 };
 
 pub const Local = struct {
@@ -125,6 +126,8 @@ pub const Block = struct {
 pub const Function = struct {
     name: []const u8,
     is_entry: bool,
+    param_count: u32,
+    ret: types.Type,
     locals: []const Local,
     body: Block,
     span: Span,

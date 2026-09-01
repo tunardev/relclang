@@ -85,14 +85,80 @@ pub fn run(
         };
         defer ctx.deinit();
 
+        const info = symbols.signature(index);
+
+        for (f.params, 0..) |param, i| {
+            if (ctx.declaredAtDepth(param.name)) {
+                try diags.err(
+                    .duplicate_binding,
+                    param.name_span,
+                    try diags.fmt("`{s}` is already a parameter", .{param.name}),
+                    "duplicate parameter",
+                    null,
+                );
+            }
+            _ = try ctx.declare(param.name, info.params[i]);
+            ctx.locals.items[i].used = true;
+        }
+
+        const param_count: u32 = @intCast(f.params.len);
+
         var stmts: std.ArrayList(tir.Stmt) = .empty;
-        for (f.body.stmts) |stmt| {
-            if (try lowerStmt(&ctx, stmt)) |lowered| try stmts.append(arena, lowered);
+        const last = f.body.stmts.len;
+
+        for (f.body.stmts, 0..) |stmt, i| {
+            const is_last = i + 1 == last;
+            const lowered = try lowerStmt(&ctx, stmt) orelse continue;
+
+            if (is_last and info.ret != .void and lowered == .expr) {
+                const ty = lowered.expr.typeOf();
+                if (ty != .invalid and ty != info.ret) {
+                    try diags.err(
+                        .missing_return,
+                        lowered.expr.spanOf(),
+                        "the final expression does not match the return type",
+                        try diags.fmt("expected `{s}`, found `{s}`", .{ info.ret.name(), ty.name() }),
+                        null,
+                    );
+                }
+                try stmts.append(arena, .{ .ret_value = lowered.expr });
+                continue;
+            }
+
+            if (lowered == .expr) {
+                const ty = lowered.expr.typeOf();
+                if (ty != .void and ty != .invalid) {
+                    try diags.err(
+                        .unused_value,
+                        lowered.expr.spanOf(),
+                        try diags.fmt("this `{s}` value is not used", .{ty.name()}),
+                        "the value is discarded",
+                        "bind it with `let`, or remove it",
+                    );
+                }
+            }
+
+            try stmts.append(arena, lowered);
+        }
+
+        if (info.ret != .void) {
+            const returns = last > 0 and stmts.items.len > 0 and stmts.items[stmts.items.len - 1] == .ret_value;
+            if (!returns) {
+                try diags.err(
+                    .missing_return,
+                    f.ret_ty_span orelse f.name_span,
+                    try diags.fmt("`{s}` must end with a `{s}` value", .{ f.name, info.ret.name() }),
+                    "no value is returned",
+                    "the last line of the body is its return value",
+                );
+            }
         }
 
         try functions.append(arena, .{
             .name = f.name,
             .is_entry = symbols.entry != null and symbols.entry.? == index,
+            .param_count = param_count,
+            .ret = info.ret,
             .locals = try ctx.locals.toOwnedSlice(arena),
             .body = .{ .stmts = try stmts.toOwnedSlice(arena) },
             .span = f.span,
@@ -313,19 +379,37 @@ fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
             } };
         },
         .function => |target| {
-            if (lowered.len != 0) {
+            const info = f.symbols.signature(target);
+            if (lowered.len != info.params.len) {
                 try f.diags.err(
                     .wrong_arg_count,
                     c.span,
-                    try f.diags.fmt("`{s}` takes no arguments", .{c.callee}),
-                    "functions take no parameters yet",
+                    try f.diags.fmt("`{s}` takes {d} {s}", .{
+                        c.callee,
+                        info.params.len,
+                        if (info.params.len == 1) "argument" else "arguments",
+                    }),
+                    try f.diags.fmt("expected {d}, found {d}", .{ info.params.len, lowered.len }),
                     null,
                 );
+            } else {
+                for (lowered, 0..) |arg, i| {
+                    const ty = arg.typeOf();
+                    if (ty != .invalid and ty != info.params[i]) {
+                        try f.diags.err(
+                            .type_mismatch,
+                            arg.spanOf(),
+                            "argument type mismatch",
+                            try f.diags.fmt("expected `{s}`, found `{s}`", .{ info.params[i].name(), ty.name() }),
+                            null,
+                        );
+                    }
+                }
             }
             return .{ .call_function = .{
                 .target = target,
                 .args = lowered,
-                .ty = .void,
+                .ty = info.ret,
                 .span = c.span,
             } };
         },
@@ -392,7 +476,7 @@ fn lowerText(gpa: std.mem.Allocator, text: []const u8) !Lowered {
     const file: source.SourceFile = .{ .path = "t.rls", .text = text };
     const toks = try lexer.tokenize(arena_state.allocator(), file, &d);
     const parsed = try parser.parse(arena_state.allocator(), toks, &d);
-    var symbols = try resolve.run(gpa, parsed, &d);
+    var symbols = try resolve.run(arena_state.allocator(), gpa, parsed, &d);
     const program = try run(arena_state.allocator(), gpa, parsed, &symbols, &d);
     return .{ .arena = arena_state, .diags = d, .symbols = symbols, .program = program };
 }
@@ -557,4 +641,82 @@ test "spans survive lowering" {
     defer l.deinit();
     const arg = l.program.functions[0].body.stmts[0].expr.call_builtin.args[0].string_const;
     try testing.expectEqualStrings("\"hi\"", text[arg.span.start..arg.span.end]);
+}
+
+test "parameters become the first locals" {
+    var l = try lowerText(testing.allocator, "fn add(a: Int, b: Int) -> Int {\n    a + b\n}\nfn main() {\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+    const f = l.program.functions[0];
+    try testing.expectEqual(@as(u32, 2), f.param_count);
+    try testing.expectEqual(types.Type.int, f.ret);
+    try testing.expectEqualStrings("a", f.locals[0].name);
+    try testing.expectEqualStrings("b", f.locals[1].name);
+}
+
+test "the final expression becomes a return value" {
+    var l = try lowerText(testing.allocator, "fn f() -> Int {\n    7\n}\nfn main() {\n}\n");
+    defer l.deinit();
+
+    const stmts = l.program.functions[0].body.stmts;
+    try testing.expectEqual(@as(i64, 7), stmts[stmts.len - 1].ret_value.int_const.value);
+}
+
+test "a void function has no return value statement" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    println(\"hi\")\n}\n");
+    defer l.deinit();
+    try testing.expect(l.program.functions[0].body.stmts[0] == .expr);
+    try testing.expectEqual(types.Type.void, l.program.functions[0].ret);
+}
+
+test "a call takes its type from the signature" {
+    var l = try lowerText(testing.allocator, "fn f() -> Int {\n    1\n}\nfn main() {\n    println(f())\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+    const call = l.program.functions[1].body.stmts[0].expr.call_builtin.args[0].call_function;
+    try testing.expectEqual(types.Type.int, call.ty);
+}
+
+test "a missing return value reports E0016" {
+    var l = try lowerText(testing.allocator, "fn f() -> Int {\n    println(\"x\")\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.missing_return));
+}
+
+test "an empty body for a returning function reports E0016" {
+    var l = try lowerText(testing.allocator, "fn f() -> Int {\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.missing_return));
+}
+
+test "an unused value reports E0015" {
+    var l = try lowerText(testing.allocator, "fn main() {\n    1 + 2\n    println(\"x\")\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.unused_value));
+}
+
+test "wrong argument count to a user function reports E0007" {
+    var l = try lowerText(testing.allocator, "fn add(a: Int, b: Int) -> Int {\n    a + b\n}\nfn main() {\n    println(add(1))\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.wrong_arg_count));
+}
+
+test "wrong argument type to a user function reports E0008" {
+    var l = try lowerText(testing.allocator, "fn add(a: Int, b: Int) -> Int {\n    a + b\n}\nfn main() {\n    println(add(1, \"x\"))\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.type_mismatch));
+}
+
+test "a duplicate parameter reports E0011" {
+    var l = try lowerText(testing.allocator, "fn f(a: Int, a: Int) -> Int {\n    a\n}\nfn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.duplicate_binding));
+}
+
+test "a str parameter round trips" {
+    var l = try lowerText(testing.allocator, "fn greet(name: Str) {\n    println(name)\n}\nfn main() {\n    greet(\"hi\")\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+    try testing.expectEqual(types.Type.str, l.program.functions[0].locals[0].ty);
 }

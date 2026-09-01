@@ -1,0 +1,9 @@
+error[E0015]: this `Int` value is not used
+
+  --> unused_value.rls:2:5
+   |
+ 2 |     1 + 2
+   |     ^^^^^ the value is discarded
+   |
+help: bind it with `let`, or remove it
+

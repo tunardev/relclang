@@ -26,7 +26,7 @@ pub fn toZig(
     const program = try parser.parse(arena, tokens, diags);
     if (diags.hasErrors()) return null;
 
-    var symbols = try resolve.run(gpa, program, diags);
+    var symbols = try resolve.run(arena, gpa, program, diags);
     defer symbols.deinit();
     if (diags.hasErrors()) return null;
 

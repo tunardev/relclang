@@ -81,10 +81,49 @@ const Parser = struct {
             p.recoverToTopLevel();
             return null;
         };
-        _ = try p.expect(.r_paren, "expected `)`", "functions take no parameters yet") orelse {
+
+        var params: std.ArrayList(ast.Param) = .empty;
+        if (p.peek() != .r_paren) {
+            while (true) {
+                const pname = try p.expect(.ident, "expected a parameter name", null) orelse {
+                    p.recoverToTopLevel();
+                    return null;
+                };
+                _ = try p.expect(.colon, "expected `:`", "every parameter needs a type") orelse {
+                    p.recoverToTopLevel();
+                    return null;
+                };
+                const pty = try p.expect(.ident, "expected a type name", null) orelse {
+                    p.recoverToTopLevel();
+                    return null;
+                };
+                try params.append(p.arena, .{
+                    .name = pname.value,
+                    .name_span = pname.span,
+                    .ty_name = pty.value,
+                    .ty_span = pty.span,
+                });
+                if (p.peek() != .comma) break;
+                _ = p.advance();
+            }
+        }
+
+        _ = try p.expect(.r_paren, "expected `)`", null) orelse {
             p.recoverToTopLevel();
             return null;
         };
+
+        var ret_ty_name: ?[]const u8 = null;
+        var ret_ty_span: ?Span = null;
+        if (p.peek() == .arrow) {
+            _ = p.advance();
+            const rty = try p.expect(.ident, "expected a return type", null) orelse {
+                p.recoverToTopLevel();
+                return null;
+            };
+            ret_ty_name = rty.value;
+            ret_ty_span = rty.span;
+        }
 
         p.skipNewlines();
 
@@ -96,6 +135,9 @@ const Parser = struct {
         return .{
             .name = name_tok.value,
             .name_span = name_tok.span,
+            .params = try params.toOwnedSlice(p.arena),
+            .ret_ty_name = ret_ty_name,
+            .ret_ty_span = ret_ty_span,
             .body = body,
             .span = Span.merge(kw.span, body.span),
         };
@@ -205,12 +247,14 @@ const Parser = struct {
             const rhs_ptr = try p.arena.create(ast.Expr);
             rhs_ptr.* = rhs;
 
+            const merged = Span.merge(lhs.spanOf(), rhs.spanOf());
+
             lhs = .{ .binary = .{
                 .op = info.op,
                 .lhs = lhs_ptr,
                 .rhs = rhs_ptr,
                 .op_span = op_tok.span,
-                .span = Span.merge(lhs.spanOf(), rhs.spanOf()),
+                .span = merged,
             } };
         }
 
@@ -461,6 +505,24 @@ test "junk after a statement reports an error" {
     var p = try parseText(testing.allocator, "fn main() {\n    println(\"a\") println(\"b\")\n}\n");
     defer p.deinit();
     try testing.expect(p.diags.hasErrors());
+}
+
+test "a binary expression spans both operands" {
+    const text = "fn main() {\n    println(12 + 345)\n}\n";
+    var p = try parseText(testing.allocator, text);
+    defer p.deinit();
+
+    const arg = p.program.fns[0].body.stmts[0].expr.call.args[0];
+    try testing.expectEqualStrings("12 + 345", text[arg.spanOf().start..arg.spanOf().end]);
+}
+
+test "a chained binary expression spans the whole chain" {
+    const text = "fn main() {\n    println(1 + 2 * 3)\n}\n";
+    var p = try parseText(testing.allocator, text);
+    defer p.deinit();
+
+    const arg = p.program.fns[0].body.stmts[0].expr.call.args[0];
+    try testing.expectEqualStrings("1 + 2 * 3", text[arg.spanOf().start..arg.spanOf().end]);
 }
 
 test "missing function name does not hang" {

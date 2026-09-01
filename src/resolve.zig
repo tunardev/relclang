@@ -5,6 +5,7 @@ const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const ast = @import("ast.zig");
 const types = @import("types.zig");
+const typecheck = @import("typecheck.zig");
 
 pub const Builtin = enum {
     println,
@@ -39,13 +40,24 @@ pub const Symbol = union(enum) {
     function: usize,
 };
 
+pub const FnInfo = struct {
+    name: []const u8,
+    params: []const types.Type,
+    ret: types.Type,
+};
+
 pub const SymbolTable = struct {
     gpa: std.mem.Allocator,
     map: std.StringHashMapUnmanaged(Symbol),
     entry: ?usize,
+    fns: []const FnInfo,
 
     pub fn lookup(t: *const SymbolTable, name: []const u8) ?Symbol {
         return t.map.get(name);
+    }
+
+    pub fn signature(t: *const SymbolTable, index: usize) FnInfo {
+        return t.fns[index];
     }
 
     pub fn deinit(t: *SymbolTable) void {
@@ -55,17 +67,57 @@ pub const SymbolTable = struct {
 
 const entry_name = "main";
 
+fn resolveTypeName(
+    name: []const u8,
+    span: source.Span,
+    diags: *diagnostics.Diagnostics,
+) !types.Type {
+    return typecheck.typeFromName(name) orelse {
+        try diags.err(
+            .type_mismatch,
+            span,
+            try diags.fmt("unknown type `{s}`", .{name}),
+            "not a known type",
+            "the types are `Int`, `Str` and `Void`",
+        );
+        return .invalid;
+    };
+}
+
 pub fn run(
+    arena: std.mem.Allocator,
     gpa: std.mem.Allocator,
     program: ast.Program,
     diags: *diagnostics.Diagnostics,
 ) !SymbolTable {
-    var table: SymbolTable = .{ .gpa = gpa, .map = .empty, .entry = null };
+    var table: SymbolTable = .{ .gpa = gpa, .map = .empty, .entry = null, .fns = &.{} };
     errdefer table.deinit();
 
     inline for (@typeInfo(Builtin).@"enum".fields) |field| {
         try table.map.put(gpa, field.name, .{ .builtin = @field(Builtin, field.name) });
     }
+
+    var infos: std.ArrayList(FnInfo) = .empty;
+
+    for (program.fns) |f| {
+        var params: std.ArrayList(types.Type) = .empty;
+        for (f.params) |param| {
+            try params.append(arena, try resolveTypeName(param.ty_name, param.ty_span, diags));
+        }
+
+        const ret: types.Type = if (f.ret_ty_name) |name|
+            try resolveTypeName(name, f.ret_ty_span.?, diags)
+        else
+            .void;
+
+        try infos.append(arena, .{
+            .name = f.name,
+            .params = try params.toOwnedSlice(arena),
+            .ret = ret,
+        });
+    }
+
+    table.fns = try infos.toOwnedSlice(arena);
 
     for (program.fns, 0..) |f, index| {
         if (table.map.get(f.name)) |existing| {
@@ -77,7 +129,28 @@ pub fn run(
             continue;
         }
         try table.map.put(gpa, f.name, .{ .function = index });
-        if (std.mem.eql(u8, f.name, entry_name)) table.entry = index;
+
+        if (std.mem.eql(u8, f.name, entry_name)) {
+            table.entry = index;
+            if (f.params.len != 0) {
+                try diags.err(
+                    .bad_signature,
+                    f.name_span,
+                    "`main` cannot take parameters",
+                    "remove the parameters",
+                    null,
+                );
+            }
+            if (table.fns[index].ret != .void) {
+                try diags.err(
+                    .bad_signature,
+                    f.ret_ty_span.?,
+                    "`main` cannot return a value",
+                    "remove the return type",
+                    null,
+                );
+            }
+        }
     }
 
     if (table.entry == null) {
@@ -113,7 +186,7 @@ fn resolveText(gpa: std.mem.Allocator, text: []const u8) !Fixture {
     const file: source.SourceFile = .{ .path = "t.rls", .text = text };
     const toks = try lexer.tokenize(arena_state.allocator(), file, &d);
     const program = try parser.parse(arena_state.allocator(), toks, &d);
-    const symbols = try run(gpa, program, &d);
+    const symbols = try run(arena_state.allocator(), gpa, program, &d);
     return .{ .arena = arena_state, .diags = d, .symbols = symbols };
 }
 

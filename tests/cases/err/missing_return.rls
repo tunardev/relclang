@@ -1,0 +1,6 @@
+fn add(a: Int, b: Int) -> Int {
+    println("no value here")
+}
+
+fn main() {
+}

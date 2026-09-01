@@ -1,5 +1,6 @@
 const std = @import("std");
 const tir = @import("../tir.zig");
+const types = @import("../types.zig");
 const runtime = @import("runtime.zig");
 
 const prefix = "rc_";
@@ -16,7 +17,13 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
     var entry: ?[]const u8 = null;
 
     for (program.functions) |f| {
-        try w.print("fn {s}{s}() rt.Error!void {{\n", .{ prefix, f.name });
+        try w.print("fn {s}{s}(", .{ prefix, f.name });
+        for (0..f.param_count) |i| {
+            if (i > 0) try w.writeAll(", ");
+            try emitLocalName(w, f, @intCast(i));
+            try w.print(": {s}", .{zigTypeOf(f.locals[i].ty)});
+        }
+        try w.print(") rt.Error!{s} {{\n", .{zigTypeOf(f.ret)});
         for (f.body.stmts) |stmt| try emitStmt(w, program, f, stmt);
         try w.writeAll("}\n\n");
 
@@ -33,8 +40,22 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
     return aw.written();
 }
 
+fn zigTypeOf(ty: types.Type) []const u8 {
+    return switch (ty) {
+        .void => "void",
+        .int => "i64",
+        .str => "[]const u8",
+        .invalid => "void",
+    };
+}
+
 fn emitStmt(w: *std.Io.Writer, program: tir.Program, f: tir.Function, stmt: tir.Stmt) Error!void {
     switch (stmt) {
+        .ret_value => |e| {
+            try w.writeAll("    return ");
+            try emitExpr(w, program, f, e);
+            try w.writeAll(";\n");
+        },
         .expr => |e| {
             try w.writeAll("    ");
             try emitExpr(w, program, f, e);
@@ -162,7 +183,7 @@ fn emitText(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     const file: source.SourceFile = .{ .path = "t.rls", .text = text };
     const toks = try lexer.tokenize(arena, file, &d);
     const parsed = try parser.parse(arena, toks, &d);
-    var symbols = try resolve.run(gpa, parsed, &d);
+    var symbols = try resolve.run(arena, gpa, parsed, &d);
     defer symbols.deinit();
     const program = try lower.run(arena, gpa, parsed, &symbols, &d);
 

@@ -1,0 +1,19 @@
+fn add(a: Int, b: Int) -> Int {
+    a + b
+}
+
+fn double(n: Int) -> Int {
+    n * 2
+}
+
+fn greet(name: Str) {
+    println(name)
+}
+
+fn main() {
+    greet("hello from a parameter")
+    println(add(3, 4))
+    println(double(add(1, 2)))
+    let total = add(double(5), 1)
+    println(total)
+}

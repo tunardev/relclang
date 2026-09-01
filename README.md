@@ -7,14 +7,19 @@ currently generates Zig, which is then compiled to a binary.
 
 ## Status
 
-Very early. Right now it handles functions, `let` bindings, integers,
-strings and arithmetic:
+Very early. Right now it handles functions with parameters and return
+types, `let` bindings, integers, strings and arithmetic:
+
+    fn add(a: Int, b: Int) -> Int {
+        a + b
+    }
 
     fn main() {
-        let x = 10
-        let y = 20
-        println(x + y)
+        println(add(3, 4))
     }
+
+The last line of a function body is its return value. There is no
+`return` keyword yet.
 
 There is one integer type, `Int`, which is 64 bits and signed. Division
 truncates toward zero and dividing by zero stops the program. Bindings
