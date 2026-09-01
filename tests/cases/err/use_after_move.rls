@@ -1,0 +1,13 @@
+struct Resource {
+    id: Int
+}
+
+fn consume(r: Resource) -> Int {
+    r.id
+}
+
+fn main() {
+    let x = Resource { id: 1 }
+    let y = x
+    println(consume(x))
+}

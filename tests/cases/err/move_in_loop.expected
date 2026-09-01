@@ -1,0 +1,9 @@
+error[E0029]: `x` is moved inside a loop
+
+   --> move_in_loop.rls:13:25
+    |
+ 13 |         println(consume(x))
+    |                         ^ this runs more than once, so the value would move twice
+    |
+help: move it before the loop, or make a fresh value each iteration
+

@@ -77,6 +77,14 @@ pub const Registry = struct {
     enums: []const EnumDef,
 };
 
+pub fn isCopy(t: Type) bool {
+    return switch (t) {
+        .void, .bool, .int, .str, .invalid => true,
+        .strukt, .enumeration => false,
+        .array => |a| isCopy(a.elem.*),
+    };
+}
+
 pub fn nameOf(arena: std.mem.Allocator, reg: Registry, t: Type) ![]const u8 {
     return switch (t) {
         .void => "Void",
@@ -147,6 +155,21 @@ test "names render primitives, structs and arrays" {
     try testing.expectEqualStrings("Shape", try nameOf(arena, reg, .{ .enumeration = 0 }));
     try testing.expectEqualStrings("[Int; 3]", try nameOf(arena, reg, inner));
     try testing.expectEqualStrings("[[Int; 3]; 2]", try nameOf(arena, reg, .{ .array = .{ .elem = &inner, .len = 2 } }));
+}
+
+test "primitives are copy and aggregates are not" {
+    try testing.expect(isCopy(.int));
+    try testing.expect(isCopy(.bool));
+    try testing.expect(isCopy(.str));
+    try testing.expect(!isCopy(.{ .strukt = 0 }));
+    try testing.expect(!isCopy(.{ .enumeration = 0 }));
+}
+
+test "an array is copy exactly when its element is" {
+    const int_ty: Type = .int;
+    const p_ty: Type = .{ .strukt = 0 };
+    try testing.expect(isCopy(.{ .array = .{ .elem = &int_ty, .len = 3 } }));
+    try testing.expect(!isCopy(.{ .array = .{ .elem = &p_ty, .len = 3 } }));
 }
 
 test "an array of invalid is invalid" {

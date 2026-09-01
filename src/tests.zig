@@ -12,6 +12,8 @@ test {
     _ = @import("tir.zig");
     _ = @import("lower.zig");
     _ = @import("lower_test.zig");
+    _ = @import("ownership.zig");
+    _ = @import("ownership_test.zig");
     _ = @import("backend/runtime.zig");
     _ = @import("backend/zig.zig");
     _ = @import("compile.zig");

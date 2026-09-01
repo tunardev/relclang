@@ -1,0 +1,32 @@
+struct Resource {
+    id: Int
+}
+
+fn consume(r: Resource) -> Int {
+    r.id
+}
+
+fn relabel(r: Resource) -> Resource {
+    Resource { id: r.id + 100 }
+}
+
+fn main() {
+    let a = Resource { id: 1 }
+    println(consume(a))
+
+    let mut b = Resource { id: 2 }
+    println(consume(b))
+    b = Resource { id: 3 }
+    println(consume(relabel(b)))
+
+    let mut i = 0
+    while i < 3 {
+        let fresh = Resource { id: i }
+        println(consume(fresh))
+        i = i + 1
+    }
+
+    let n = 5
+    let m = n
+    println(n + m)
+}

@@ -5,6 +5,7 @@ const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const resolve = @import("resolve.zig");
 const lower = @import("lower.zig");
+const ownership = @import("ownership.zig");
 const backend = @import("backend/zig.zig");
 const runtime = @import("backend/runtime.zig");
 
@@ -31,6 +32,9 @@ pub fn toZig(
     if (diags.hasErrors()) return null;
 
     const typed = try lower.run(arena, gpa, program, &symbols, diags);
+    if (diags.hasErrors()) return null;
+
+    try ownership.check(gpa, typed, diags);
     if (diags.hasErrors()) return null;
 
     return .{

@@ -1,0 +1,9 @@
+error[E0028]: use of moved value `x`
+
+   --> use_after_move.rls:12:21
+    |
+ 12 |     println(consume(x))
+    |                     ^ value used here after move
+    |
+help: `x` has type `Resource`, which is moved rather than copied
+

@@ -1,0 +1,16 @@
+struct Resource {
+    id: Int
+}
+
+fn consume(r: Resource) -> Int {
+    r.id
+}
+
+fn main() {
+    let x = Resource { id: 1 }
+    let mut i = 0
+    while i < 3 {
+        println(consume(x))
+        i = i + 1
+    }
+}
