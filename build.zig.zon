@@ -10,6 +10,7 @@
         "src",
         "tests",
         "examples",
+        "bench",
         "README.md",
         "LICENSE",
     },

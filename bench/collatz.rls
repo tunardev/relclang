@@ -1,0 +1,41 @@
+struct Acc {
+    total: Int
+    best: Int
+}
+
+trait Step {
+    fn advance(self, n: Int) -> Int
+}
+
+impl Step for Acc {
+    fn advance(self, n: Int) -> Int {
+        if n % 2 == 0 { n / 2 } else { 3 * n + 1 }
+    }
+}
+
+fn chain<T: Step>(w: &T, start: Int) -> Int {
+    let mut n = start
+    let mut count = 0
+    while n != 1 {
+        n = w.advance(n)
+        count = count + 1
+    }
+    count
+}
+
+fn main() {
+    let acc = Acc { total: 0, best: 0 }
+    let mut i = 1
+    let mut best = 0
+    let mut total = 0
+    while i < 300000 {
+        let c = chain(&acc, i)
+        total = total + c
+        if c > best {
+            best = c
+        }
+        i = i + 1
+    }
+    println(total)
+    println(best)
+}

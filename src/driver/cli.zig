@@ -11,7 +11,7 @@ const usage =
     \\relc - the Relastic compiler
     \\
     \\usage:
-    \\  relc build <file.rls> [-o <name>]
+    \\  relc build <file.rls> [-o <name>] [--release]
     \\  relc run <file.rls>
     \\  relc check <file.rls>
     \\  relc emit-zig <file.rls>
@@ -123,8 +123,10 @@ pub fn run(
     const zig_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ cache_dir, zig_name });
     const emit_flag = try std.fmt.allocPrint(arena, "-femit-bin={s}", .{exe_path});
 
+    const optimize = if (wantsRelease(argv)) "-OReleaseFast" else "-ODebug";
+
     const zig_result = std.process.run(arena, io, .{
-        .argv = &.{ "zig", "build-exe", zig_path, emit_flag },
+        .argv = &.{ "zig", "build-exe", zig_path, emit_flag, optimize },
     }) catch |err| {
         try e.print("cannot run the zig compiler: {s}\n", .{@errorName(err)});
         try e.writeAll("relc needs `zig` on your PATH\n");
@@ -172,6 +174,13 @@ fn parseCommand(text: []const u8) ?Command {
     return null;
 }
 
+fn wantsRelease(argv: []const [:0]const u8) bool {
+    for (argv[@min(argv.len, 3)..]) |arg| {
+        if (std.mem.eql(u8, arg, "--release")) return true;
+    }
+    return false;
+}
+
 fn parseOutputName(argv: []const [:0]const u8) ?[]const u8 {
     var i: usize = 3;
     while (i + 1 < argv.len) : (i += 1) {
@@ -192,6 +201,13 @@ test "stem strips directories and extension" {
     try testing.expectEqualStrings("hello", stemOf("examples/hello.rls"));
     try testing.expectEqualStrings("hello", stemOf("hello.rls"));
     try testing.expectEqualStrings("hello", stemOf("/a/b/hello.rls"));
+}
+
+test "release is opt in" {
+    const plain = [_][:0]const u8{ "relc", "build", "a.rls" };
+    const rel = [_][:0]const u8{ "relc", "build", "a.rls", "--release" };
+    try testing.expect(!wantsRelease(&plain));
+    try testing.expect(wantsRelease(&rel));
 }
 
 test "parses every command name" {

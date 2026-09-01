@@ -2,3 +2,6 @@
 zig-out/
 .relastic/
 /hello
+bench/collatz_rls
+bench/collatz_zig
+bench/collatz_c
