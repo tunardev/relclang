@@ -9,6 +9,8 @@ const build_options = @import("build_options");
 
 const err_dir = "tests/cases/err";
 const ok_dir = "tests/cases/ok";
+const showcase_rls = "examples/showcase.rls";
+const showcase_zig = "examples/showcase.generated.zig";
 
 fn renderCase(gpa: std.mem.Allocator, path: []const u8, text: []const u8) ![]u8 {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -121,4 +123,39 @@ test "ok cases build and produce the expected output" {
     }
 
     try std.testing.expect(checked > 0);
+}
+
+test "the published showcase output matches the compiler" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, showcase_rls, gpa, .limited(1 << 20));
+    defer gpa.free(text);
+
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+
+    var diags: diagnostics.Diagnostics = .init(gpa);
+    defer diags.deinit();
+
+    const file: source.SourceFile = .{ .path = showcase_rls, .text = text };
+    const result = try compile.toZig(arena_state.allocator(), gpa, file, &diags);
+
+    if (result == null) {
+        std.debug.print("{s} does not compile\n", .{showcase_rls});
+        return error.ShowcaseBroken;
+    }
+
+    if (build_options.update_goldens) {
+        try std.Io.Dir.cwd().writeFile(io, .{
+            .sub_path = showcase_zig,
+            .data = result.?.zig_source,
+        });
+        return;
+    }
+
+    const published = try std.Io.Dir.cwd().readFileAlloc(io, showcase_zig, gpa, .limited(1 << 20));
+    defer gpa.free(published);
+
+    try std.testing.expectEqualStrings(published, result.?.zig_source);
 }

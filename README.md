@@ -97,6 +97,43 @@ There is one integer type, `Int`, which is 64 bits and signed. Division
 truncates toward zero and dividing by zero stops the program. Bindings
 are immutable and cannot be redeclared in the same scope.
 
+## What it compiles to
+
+Relastic is compiled, not interpreted. The compiler works out what your
+program means, then writes Zig, and Zig turns that into a binary.
+
+`examples/showcase.rls` uses every part of the language, and
+`examples/showcase.generated.zig` is exactly what the compiler produces
+for it. A test regenerates that file and fails if the two ever disagree,
+so it always shows real output.
+
+This Relastic:
+
+    fn doubled(p: &Point) -> Result<Int, Str> {
+        let m = checked(p)?
+        Ok(m * 2)
+    }
+
+becomes this Zig:
+
+    fn rc_doubled(v0_p: *const S0_Point) rt.Error!E0_Result_Int_Str {
+        const v1_m = b0: {
+                switch ((try rc_checked(v0_p))) {
+                    .v0_Ok => |__t| break :b0 __t.f0,
+                    .v1_Err => |__e| return E0_Result_Int_Str{ .v1_Err = __e },
+                }
+        };
+        return E0_Result_Int_Str{ .v0_Ok = .{ .f0 = (v1_m * @as(i64, 2)) } };
+    }
+
+Generic types are compiled into real ones, so `Result<Int, Str>` becomes
+a plain tagged union. Traits become direct calls. Borrows become
+pointers, because the compiler has already proved they are safe.
+
+To see it for any file of your own:
+
+    relc emit-zig myfile.rls
+
 ## Build
 
 You need Zig 0.16.0.
