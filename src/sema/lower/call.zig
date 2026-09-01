@@ -19,6 +19,7 @@ const lowerWithExpected = expr_mod.lowerWithExpected;
 const literal_mod = @import("literal.zig");
 const builtinOf = expr_mod.builtinOf;
 const lowerEnumLit = literal_mod.lowerEnumLit;
+const rootPlace = @import("block.zig").rootPlace;
 
 pub fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
     var declared: []const Type = &.{};
@@ -238,6 +239,32 @@ pub fn lowerGenericCall(
     } };
 }
 
+fn crossesSharedRef(expr: tir.Expr) bool {
+    const ty = expr.typeOf();
+    if (ty == .ref and !ty.ref.mutable) return true;
+    return switch (expr) {
+        .field => |x| crossesSharedRef(x.base.*),
+        .index => |x| crossesSharedRef(x.base.*),
+        .deref => |d| crossesSharedRef(d.operand.*),
+        .borrow => |b| crossesSharedRef(b.operand.*),
+        else => false,
+    };
+}
+
+fn requireMutableReceiver(f: *Fn, receiver: tir.Expr, m: ast.MethodCall) Error!void {
+    if (!crossesSharedRef(receiver)) return;
+    var owned = receiver.typeOf();
+    while (owned == .ref) owned = owned.ref.target.*;
+    const name = if (rootPlace(f, receiver)) |place| place.name else "this";
+    try f.diags.err(
+        .immutable_assign,
+        m.span,
+        try f.diags.fmt("cannot change `{s}` through a shared reference", .{name}),
+        try f.diags.fmt("`{s}` only allows reading", .{try f.tyName(receiver.typeOf())}),
+        try f.diags.fmt("take `&mut {s}` to change it", .{try f.tyName(owned)}),
+    );
+}
+
 const VEC_METHODS = [_]struct { name: []const u8, op: tir.VecOp.Op, arity: usize }{
     .{ .name = "push", .op = .push, .arity = 1 },
     .{ .name = "get", .op = .get, .arity = 1 },
@@ -331,6 +358,8 @@ fn lowerVecMethod(f: *Fn, m: ast.MethodCall, receiver: tir.Expr, vec_ty: Type) E
         for (m.args) |arg| _ = try lowerExpr(f, arg);
         return bad;
     }
+
+    if (spec.op == .push or spec.op == .set) try requireMutableReceiver(f, receiver, m);
 
     const wants: [2]Type = switch (spec.op) {
         .push => .{ elem, .void },
@@ -445,6 +474,8 @@ fn lowerStringMethod(f: *Fn, m: ast.MethodCall, receiver: tir.Expr) Error!tir.Ex
         for (m.args) |arg| _ = try lowerExpr(f, arg);
         return bad;
     }
+
+    if (spec.ret == .void) try requireMutableReceiver(f, receiver, m);
 
     var args: std.ArrayList(tir.Expr) = .empty;
     try args.append(f.arena, receiver);

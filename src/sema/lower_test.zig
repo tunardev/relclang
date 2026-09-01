@@ -833,3 +833,67 @@ test "a returning branch unifies with a valued branch" {
     defer l.deinit();
     try testing.expect(!l.diags.hasErrors());
 }
+
+test "pushing through a shared reference reports E0027" {
+    var l = try lowerText(testing.allocator,
+        \\fn add(v: &Vec<Int>) {
+        \\    v.push(1)
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<Int> = Vec.new(alloc)
+        \\    add(&v)
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(l.has(.immutable_assign));
+}
+
+test "pushing through a mutable reference is allowed" {
+    var l = try lowerText(testing.allocator,
+        \\fn add(v: &mut Vec<Int>) {
+        \\    v.push(1)
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let mut v: Vec<Int> = Vec.new(alloc)
+        \\    add(&mut v)
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "appending to a string field through a shared reference reports E0027" {
+    var l = try lowerText(testing.allocator,
+        \\struct Log {
+        \\    text: String
+        \\}
+        \\fn note(l: &Log) {
+        \\    l.text.push("x")
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let log = Log { text: String.new(alloc) }
+        \\    note(&log)
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(l.has(.immutable_assign));
+}
+
+test "reading through a shared reference is allowed" {
+    var l = try lowerText(testing.allocator,
+        \\fn count(v: &Vec<Int>) -> Int {
+        \\    v.len() + v.get(0)
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<Int> = Vec.new(alloc)
+        \\    v.push(1)
+        \\    println(count(&v))
+        \\}
+        \\
+    );
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
