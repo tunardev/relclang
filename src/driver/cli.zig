@@ -21,6 +21,53 @@ const usage =
 
 const Command = enum { build, run, check, emit_zig, version };
 
+pub const Options = struct {
+    command: Command,
+    path: []const u8 = "",
+    output: ?[]const u8 = null,
+    release: bool = false,
+};
+
+pub const ParseError = error{ MissingCommand, UnknownCommand, MissingFile, NotRls, MissingOutputName, UnknownOption };
+
+pub fn parseArgs(argv: []const [:0]const u8) ParseError!Options {
+    if (argv.len < 2) return error.MissingCommand;
+    const command = parseCommand(argv[1]) orelse return error.UnknownCommand;
+    if (command == .version) return .{ .command = command };
+    if (argv.len < 3) return error.MissingFile;
+
+    var opts: Options = .{ .command = command, .path = argv[2] };
+    if (!std.mem.endsWith(u8, opts.path, ".rls")) return error.NotRls;
+
+    var i: usize = 3;
+    while (i < argv.len) : (i += 1) {
+        const arg = argv[i];
+        if (std.mem.eql(u8, arg, "--release")) {
+            opts.release = true;
+        } else if (std.mem.eql(u8, arg, "-o")) {
+            if (i + 1 >= argv.len) return error.MissingOutputName;
+            i += 1;
+            opts.output = argv[i];
+        } else {
+            return error.UnknownOption;
+        }
+    }
+    return opts;
+}
+
+fn offendingOption(argv: []const [:0]const u8) []const u8 {
+    var i: usize = 3;
+    while (i < argv.len) : (i += 1) {
+        if (std.mem.eql(u8, argv[i], "--release")) continue;
+        if (std.mem.eql(u8, argv[i], "-o")) {
+            i += 1;
+            continue;
+        }
+        return argv[i];
+    }
+    return "";
+}
+
 pub fn run(
     arena: std.mem.Allocator,
     gpa: std.mem.Allocator,
@@ -37,34 +84,33 @@ pub fn run(
     const e = &errw.interface;
     defer e.flush() catch {};
 
-    if (argv.len < 2) {
-        try e.writeAll(usage);
-        return 1;
-    }
-
-    const command = parseCommand(argv[1]) orelse {
-        try e.print("unknown command `{s}`\n\n", .{argv[1]});
-        try e.writeAll(usage);
+    const opts = parseArgs(argv) catch |err| {
+        switch (err) {
+            error.MissingCommand => try e.writeAll(usage),
+            error.UnknownCommand => {
+                try e.print("unknown command `{s}`\n\n", .{argv[1]});
+                try e.writeAll(usage);
+            },
+            error.MissingFile => {
+                try e.print("`{s}` needs a source file\n\n", .{argv[1]});
+                try e.writeAll(usage);
+            },
+            error.NotRls => try e.print("`{s}` is not a .rls file\n", .{argv[2]}),
+            error.MissingOutputName => try e.writeAll("`-o` needs an output name\n"),
+            error.UnknownOption => {
+                try e.print("unknown option `{s}`\n\n", .{offendingOption(argv)});
+                try e.writeAll(usage);
+            },
+        }
         return 1;
     };
 
-    if (command == .version) {
+    if (opts.command == .version) {
         try w.print("relc {s}\n", .{version});
         return 0;
     }
 
-    if (argv.len < 3) {
-        try e.print("`{s}` needs a source file\n\n", .{argv[1]});
-        try e.writeAll(usage);
-        return 1;
-    }
-
-    const path = argv[2];
-
-    if (!std.mem.endsWith(u8, path, ".rls")) {
-        try e.print("`{s}` is not a .rls file\n", .{path});
-        return 1;
-    }
+    const path = opts.path;
 
     const text = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20)) catch |err| {
         try e.print("cannot read `{s}`: {s}\n", .{ path, @errorName(err) });
@@ -86,23 +132,23 @@ pub fn run(
 
     const compiled = result.?;
 
-    if (command == .check) {
+    if (opts.command == .check) {
         try w.print("{s}: no errors\n", .{path});
         return 0;
     }
 
-    if (command == .emit_zig) {
+    if (opts.command == .emit_zig) {
         try w.writeAll(compiled.zig_source);
         return 0;
     }
 
     const stem = stemOf(path);
-    const output_name = parseOutputName(argv) orelse stem;
+    const output_name = opts.output orelse stem;
 
-    const exe_path = if (command == .run)
+    const exe_path = if (opts.command == .run)
         try std.fmt.allocPrint(arena, "{s}/{s}", .{ cache_dir, stem })
     else
-        try std.fmt.allocPrint(arena, "./{s}", .{output_name});
+        output_name;
 
     const zig_name = try std.fmt.allocPrint(arena, "{s}.zig", .{stem});
 
@@ -123,7 +169,7 @@ pub fn run(
     const zig_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ cache_dir, zig_name });
     const emit_flag = try std.fmt.allocPrint(arena, "-femit-bin={s}", .{exe_path});
 
-    const optimize = if (wantsRelease(argv)) "-OReleaseFast" else "-ODebug";
+    const optimize = if (opts.release) "-OReleaseFast" else "-ODebug";
 
     const zig_result = std.process.run(arena, io, .{
         .argv = &.{ "zig", "build-exe", zig_path, emit_flag, optimize },
@@ -144,7 +190,7 @@ pub fn run(
         return 1;
     }
 
-    if (command == .build) {
+    if (opts.command == .build) {
         try w.print("built {s}\n", .{output_name});
         return 0;
     }
@@ -177,21 +223,6 @@ fn parseCommand(text: []const u8) ?Command {
     return null;
 }
 
-fn wantsRelease(argv: []const [:0]const u8) bool {
-    for (argv[@min(argv.len, 3)..]) |arg| {
-        if (std.mem.eql(u8, arg, "--release")) return true;
-    }
-    return false;
-}
-
-fn parseOutputName(argv: []const [:0]const u8) ?[]const u8 {
-    var i: usize = 3;
-    while (i + 1 < argv.len) : (i += 1) {
-        if (std.mem.eql(u8, argv[i], "-o")) return argv[i + 1];
-    }
-    return null;
-}
-
 fn stemOf(path: []const u8) []const u8 {
     const base = std.fs.path.basename(path);
     const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return base;
@@ -206,13 +237,6 @@ test "stem strips directories and extension" {
     try testing.expectEqualStrings("hello", stemOf("/a/b/hello.rls"));
 }
 
-test "release is opt in" {
-    const plain = [_][:0]const u8{ "relc", "build", "a.rls" };
-    const rel = [_][:0]const u8{ "relc", "build", "a.rls", "--release" };
-    try testing.expect(!wantsRelease(&plain));
-    try testing.expect(wantsRelease(&rel));
-}
-
 test "parses every command name" {
     try testing.expectEqual(Command.build, parseCommand("build").?);
     try testing.expectEqual(Command.run, parseCommand("run").?);
@@ -222,12 +246,54 @@ test "parses every command name" {
     try testing.expect(parseCommand("nope") == null);
 }
 
-test "output name defaults to none without -o" {
+test "parses a plain build command" {
     const argv = [_][:0]const u8{ "relc", "build", "a.rls" };
-    try testing.expect(parseOutputName(&argv) == null);
+    const opts = try parseArgs(&argv);
+    try testing.expectEqual(Command.build, opts.command);
+    try testing.expectEqualStrings("a.rls", opts.path);
+    try testing.expect(opts.output == null);
+    try testing.expect(!opts.release);
 }
 
-test "output name is read from -o" {
-    const argv = [_][:0]const u8{ "relc", "build", "a.rls", "-o", "custom" };
-    try testing.expectEqualStrings("custom", parseOutputName(&argv).?);
+test "release and output can be given in any order" {
+    const argv = [_][:0]const u8{ "relc", "build", "a.rls", "--release", "-o", "out" };
+    const opts = try parseArgs(&argv);
+    try testing.expect(opts.release);
+    try testing.expectEqualStrings("out", opts.output.?);
+
+    const swapped = [_][:0]const u8{ "relc", "build", "a.rls", "-o", "out", "--release" };
+    const opts2 = try parseArgs(&swapped);
+    try testing.expect(opts2.release);
+    try testing.expectEqualStrings("out", opts2.output.?);
+}
+
+test "an output flag without a name is rejected" {
+    const argv = [_][:0]const u8{ "relc", "build", "a.rls", "-o" };
+    try testing.expectError(error.MissingOutputName, parseArgs(&argv));
+}
+
+test "an unknown option is rejected" {
+    const argv = [_][:0]const u8{ "relc", "build", "a.rls", "--fast" };
+    try testing.expectError(error.UnknownOption, parseArgs(&argv));
+    try testing.expectEqualStrings("--fast", offendingOption(&argv));
+}
+
+test "version needs no file" {
+    const argv = [_][:0]const u8{ "relc", "version" };
+    const opts = try parseArgs(&argv);
+    try testing.expectEqual(Command.version, opts.command);
+}
+
+test "a source file must end in rls" {
+    const argv = [_][:0]const u8{ "relc", "run", "a.txt" };
+    try testing.expectError(error.NotRls, parseArgs(&argv));
+}
+
+test "a missing command or file is reported" {
+    const none = [_][:0]const u8{"relc"};
+    try testing.expectError(error.MissingCommand, parseArgs(&none));
+    const no_file = [_][:0]const u8{ "relc", "run" };
+    try testing.expectError(error.MissingFile, parseArgs(&no_file));
+    const bad = [_][:0]const u8{ "relc", "nope", "a.rls" };
+    try testing.expectError(error.UnknownCommand, parseArgs(&bad));
 }
