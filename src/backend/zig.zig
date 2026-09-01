@@ -81,7 +81,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
 
 fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void {
     switch (ty) {
-        .void, .invalid => try w.writeAll("void"),
+        .void, .invalid, .param => try w.writeAll("void"),
         .bool => try w.writeAll("bool"),
         .int => try w.writeAll("i64"),
         .str => try w.writeAll("[]const u8"),

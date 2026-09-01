@@ -36,6 +36,7 @@ pub const Code = enum {
     move_in_loop,
     borrow_conflict,
     move_while_borrowed,
+    cannot_infer,
 
     pub fn id(c: Code) []const u8 {
         return switch (c) {
@@ -70,6 +71,7 @@ pub const Code = enum {
             .move_in_loop => "E0029",
             .borrow_conflict => "E0030",
             .move_while_borrowed => "E0031",
+            .cannot_infer => "E0032",
         };
     }
 };
@@ -407,7 +409,7 @@ test "every code has a distinct id" {
         .not_indexable,    .non_exhaustive,     .unreachable_arm,
         .bad_pattern,     .not_assignable,     .immutable_assign,
         .use_after_move,  .move_in_loop,       .borrow_conflict,
-        .move_while_borrowed,
+        .move_while_borrowed, .cannot_infer,
     };
     for (codes, 0..) |a, i| {
         for (codes[i + 1 ..]) |b| {

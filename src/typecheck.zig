@@ -4,6 +4,7 @@ const types = @import("types.zig");
 
 pub fn typeFromName(name: []const u8) ?types.Type {
     if (std.mem.eql(u8, name, "Int")) return .int;
+    if (std.mem.eql(u8, name, "Bool")) return .bool;
     if (std.mem.eql(u8, name, "Str")) return .str;
     if (std.mem.eql(u8, name, "Void")) return .void;
     return null;
@@ -35,6 +36,10 @@ pub fn unaryResult(op: ast.UnOp, operand: types.Type) ?types.Type {
 }
 
 const testing = std.testing;
+
+test "Bool is a known type name" {
+    try testing.expect(types.Type.eql(.bool, typeFromName("Bool").?));
+}
 
 test "type names map to types" {
     try testing.expect(types.Type.eql(.int, typeFromName("Int").?));

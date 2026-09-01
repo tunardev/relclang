@@ -605,3 +605,67 @@ test "bool literals and logic type check" {
     defer l.deinit();
     try testing.expect(!l.diags.hasErrors());
 }
+
+test "a generic function instantiates once per type" {
+    var l = try lowerText(testing.allocator,
+        "fn id<T>(x: T) -> T {\n    x\n}\n" ++
+        "fn main() {\n    println(id(1))\n    println(id(\"a\"))\n    println(id(2))\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+
+    var instances: usize = 0;
+    for (l.program.functions) |f| {
+        if (std.mem.startsWith(u8, f.name, "id_")) instances += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), instances);
+}
+
+test "instances carry substituted types" {
+    var l = try lowerText(testing.allocator,
+        "fn id<T>(x: T) -> T {\n    x\n}\n" ++
+        "fn main() {\n    println(id(1))\n}\n");
+    defer l.deinit();
+
+    for (l.program.functions) |f| {
+        if (!std.mem.eql(u8, f.name, "id_Int")) continue;
+        try testing.expect(types.Type.eql(.int, f.ret));
+        try testing.expect(types.Type.eql(.int, f.locals[0].ty));
+        return;
+    }
+    return error.InstanceNotFound;
+}
+
+test "a generic function is not emitted uninstantiated" {
+    var l = try lowerText(testing.allocator,
+        "fn unused<T>(x: T) -> T {\n    x\n}\n" ++
+        "fn main() {\n    println(1)\n}\n");
+    defer l.deinit();
+
+    try testing.expect(!l.diags.hasErrors());
+    try testing.expectEqual(@as(usize, 1), l.program.functions.len);
+}
+
+test "conflicting inference reports a type mismatch" {
+    var l = try lowerText(testing.allocator,
+        "fn pair<T>(a: T, b: T) -> T {\n    a\n}\n" ++
+        "fn main() {\n    println(pair(1, \"two\"))\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.type_mismatch));
+}
+
+test "an uninferable parameter reports E0032" {
+    var l = try lowerText(testing.allocator,
+        "fn make<T>() -> Int {\n    1\n}\n" ++
+        "fn main() {\n    println(make())\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.cannot_infer));
+}
+
+test "generics unify through references" {
+    var l = try lowerText(testing.allocator,
+        "fn deref<T>(x: &T) -> Int {\n    1\n}\n" ++
+        "fn main() {\n    let n = 5\n    println(deref(&n))\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}

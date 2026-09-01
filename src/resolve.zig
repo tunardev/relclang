@@ -50,6 +50,11 @@ pub const FnInfo = struct {
     name: []const u8,
     params: []const types.Type,
     ret: types.Type,
+    type_param_count: u32,
+
+    pub fn isGeneric(i: FnInfo) bool {
+        return i.type_param_count > 0;
+    }
 };
 
 pub const SymbolTable = struct {
@@ -101,8 +106,21 @@ fn resolveType(
     expr: ast.TypeExpr,
     diags: *diagnostics.Diagnostics,
 ) !types.Type {
+    return resolveTypeIn(arena, table, expr, &.{}, diags);
+}
+
+fn resolveTypeIn(
+    arena: std.mem.Allocator,
+    table: *const SymbolTable,
+    expr: ast.TypeExpr,
+    type_params: []const ast.TypeParam,
+    diags: *diagnostics.Diagnostics,
+) error{OutOfMemory}!types.Type {
     switch (expr) {
         .named => |n| {
+            for (type_params, 0..) |tp, i| {
+                if (std.mem.eql(u8, tp.name, n.name)) return .{ .param = @intCast(i) };
+            }
             if (typecheck.typeFromName(n.name)) |primitive| return primitive;
             if (table.structIndex(n.name)) |index| return .{ .strukt = index };
             if (table.enumIndex(n.name)) |index| return .{ .enumeration = index };
@@ -112,18 +130,18 @@ fn resolveType(
                 n.span,
                 try diags.fmt("unknown type `{s}`", .{n.name}),
                 "not a known type",
-                "the built in types are `Int`, `Str` and `Void`",
+                "the built in types are `Int`, `Bool`, `Str` and `Void`",
             );
             return .invalid;
         },
         .ref => |r| {
-            const target = try resolveType(arena, table, r.target.*, diags);
+            const target = try resolveTypeIn(arena, table, r.target.*, type_params, diags);
             const ptr = try arena.create(types.Type);
             ptr.* = target;
             return .{ .ref = .{ .mutable = r.mutable, .target = ptr } };
         },
         .array => |a| {
-            const elem = try resolveType(arena, table, a.elem.*, diags);
+            const elem = try resolveTypeIn(arena, table, a.elem.*, type_params, diags);
 
             const len = std.fmt.parseInt(u64, a.len_text, 10) catch {
                 try diags.err(
@@ -302,11 +320,11 @@ pub fn run(
     for (program.fns) |f| {
         var params: std.ArrayList(types.Type) = .empty;
         for (f.params) |param| {
-            try params.append(arena, try resolveType(arena, &table, param.ty, diags));
+            try params.append(arena, try resolveTypeIn(arena, &table, param.ty, f.type_params, diags));
         }
 
         const ret: types.Type = if (f.ret_ty) |ty_expr|
-            try resolveType(arena, &table, ty_expr, diags)
+            try resolveTypeIn(arena, &table, ty_expr, f.type_params, diags)
         else
             .void;
 
@@ -314,6 +332,7 @@ pub fn run(
             .name = f.name,
             .params = try params.toOwnedSlice(arena),
             .ret = ret,
+            .type_param_count = @intCast(f.type_params.len),
         });
     }
 

@@ -1,0 +1,26 @@
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn pick<T>(cond: Bool, a: T, b: T) -> T {
+    if cond { a } else { b }
+}
+
+struct Boxed {
+    v: Int
+}
+
+fn unwrap(b: &Boxed) -> Int {
+    b.v
+}
+
+fn main() {
+    println(identity(42))
+    println(identity("text"))
+    println(identity(true))
+    println(pick(true, 1, 2))
+    println(pick(false, "yes", "no"))
+
+    let b = Boxed { v: 7 }
+    println(unwrap(identity(&b)))
+}

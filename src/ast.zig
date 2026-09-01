@@ -162,8 +162,13 @@ pub const Block = struct {
     span: Span,
 };
 
+pub const TypeParam = struct {
+    name: []const u8,
+    span: Span,
+};
+
 pub const TypeExpr = union(enum) {
-    named: struct { name: []const u8, span: Span },
+    named: struct { name: []const u8, args: []const TypeExpr, span: Span },
     array: struct { elem: *const TypeExpr, len_text: []const u8, len_span: Span, span: Span },
     ref: struct { mutable: bool, target: *const TypeExpr, span: Span },
 
@@ -191,6 +196,7 @@ pub const FieldDecl = struct {
 pub const StructDecl = struct {
     name: []const u8,
     name_span: Span,
+    type_params: []const TypeParam,
     fields: []const FieldDecl,
     span: Span,
 };
@@ -204,6 +210,7 @@ pub const VariantDecl = struct {
 pub const EnumDecl = struct {
     name: []const u8,
     name_span: Span,
+    type_params: []const TypeParam,
     variants: []const VariantDecl,
     span: Span,
 };
@@ -297,6 +304,7 @@ pub const Param = struct {
 pub const Fn = struct {
     name: []const u8,
     name_span: Span,
+    type_params: []const TypeParam,
     params: []const Param,
     ret_ty: ?TypeExpr,
     body: Block,

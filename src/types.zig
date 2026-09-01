@@ -10,6 +10,7 @@ pub const Type = union(enum) {
     enumeration: u32,
     array: Array,
     ref: Ref,
+    param: u32,
 
     pub const Array = struct {
         elem: *const Type,
@@ -32,6 +33,7 @@ pub const Type = union(enum) {
             .enumeration => |i| b == .enumeration and b.enumeration == i,
             .array => |x| b == .array and x.len == b.array.len and eql(x.elem.*, b.array.elem.*),
             .ref => |r| b == .ref and r.mutable == b.ref.mutable and eql(r.target.*, b.ref.target.*),
+            .param => |i| b == .param and b.param == i,
         };
     }
 
@@ -85,10 +87,53 @@ pub const Registry = struct {
     enums: []const EnumDef,
 };
 
+pub fn hasParam(t: Type) bool {
+    return switch (t) {
+        .param => true,
+        .array => |a| hasParam(a.elem.*),
+        .ref => |r| hasParam(r.target.*),
+        else => false,
+    };
+}
+
+pub fn substitute(arena: std.mem.Allocator, t: Type, args: []const Type) error{OutOfMemory}!Type {
+    return switch (t) {
+        .param => |i| if (i < args.len) args[i] else t,
+        .array => |a| blk: {
+            const elem = try arena.create(Type);
+            elem.* = try substitute(arena, a.elem.*, args);
+            break :blk .{ .array = .{ .elem = elem, .len = a.len } };
+        },
+        .ref => |r| blk: {
+            const target = try arena.create(Type);
+            target.* = try substitute(arena, r.target.*, args);
+            break :blk .{ .ref = .{ .mutable = r.mutable, .target = target } };
+        },
+        else => t,
+    };
+}
+
+pub fn unify(declared: Type, actual: Type, out: []?Type) bool {
+    return switch (declared) {
+        .param => |i| blk: {
+            if (i >= out.len) break :blk false;
+            if (out[i]) |bound| break :blk Type.eql(bound, actual);
+            out[i] = actual;
+            break :blk true;
+        },
+        .array => |a| actual == .array and a.len == actual.array.len and
+            unify(a.elem.*, actual.array.elem.*, out),
+        .ref => |r| actual == .ref and r.mutable == actual.ref.mutable and
+            unify(r.target.*, actual.ref.target.*, out),
+        else => Type.eql(declared, actual),
+    };
+}
+
 pub fn isCopy(t: Type) bool {
     return switch (t) {
         .void, .bool, .int, .str, .invalid => true,
         .ref => true,
+        .param => false,
         .strukt, .enumeration => false,
         .array => |a| isCopy(a.elem.*),
     };
@@ -107,6 +152,7 @@ pub fn nameOf(arena: std.mem.Allocator, reg: Registry, t: Type) ![]const u8 {
             try nameOf(arena, reg, a.elem.*),
             a.len,
         }),
+        .param => |i| std.fmt.allocPrint(arena, "T{d}", .{i}),
         .ref => |r| std.fmt.allocPrint(arena, "&{s}{s}", .{
             if (r.mutable) "mut " else "",
             try nameOf(arena, reg, r.target.*),
@@ -204,6 +250,50 @@ test "reference names render with mut" {
 
     try testing.expectEqualStrings("&Int", try nameOf(arena, reg, .{ .ref = .{ .mutable = false, .target = &int_ty } }));
     try testing.expectEqualStrings("&mut Int", try nameOf(arena, reg, .{ .ref = .{ .mutable = true, .target = &int_ty } }));
+}
+
+test "substitution replaces parameters" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const p0: Type = .{ .param = 0 };
+    const args = [_]Type{.int};
+
+    try testing.expect(Type.eql(.int, try substitute(arena, p0, &args)));
+
+    const arr: Type = .{ .array = .{ .elem = &p0, .len = 3 } };
+    const out = try substitute(arena, arr, &args);
+    try testing.expect(Type.eql(.int, out.array.elem.*));
+    try testing.expectEqual(@as(u64, 3), out.array.len);
+}
+
+test "unification binds and then checks parameters" {
+    var out = [_]?Type{null};
+    const p0: Type = .{ .param = 0 };
+
+    try testing.expect(unify(p0, .int, &out));
+    try testing.expect(Type.eql(.int, out[0].?));
+    try testing.expect(unify(p0, .int, &out));
+    try testing.expect(!unify(p0, .str, &out));
+}
+
+test "unification descends through references" {
+    var out = [_]?Type{null};
+    const p0: Type = .{ .param = 0 };
+    const int_ty: Type = .int;
+    const declared: Type = .{ .ref = .{ .mutable = false, .target = &p0 } };
+    const actual: Type = .{ .ref = .{ .mutable = false, .target = &int_ty } };
+
+    try testing.expect(unify(declared, actual, &out));
+    try testing.expect(Type.eql(.int, out[0].?));
+}
+
+test "hasParam finds nested parameters" {
+    const p0: Type = .{ .param = 0 };
+    try testing.expect(hasParam(p0));
+    try testing.expect(hasParam(.{ .ref = .{ .mutable = false, .target = &p0 } }));
+    try testing.expect(!hasParam(.int));
 }
 
 test "an array of invalid is invalid" {

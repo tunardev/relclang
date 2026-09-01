@@ -27,14 +27,78 @@ const Place = struct {
     name: []const u8,
 };
 
+const Instance = struct {
+    ast_index: usize,
+    args: []const Type,
+    tir_index: usize,
+};
+
+const Job = struct {
+    ast_index: usize,
+    args: []const Type,
+    tir_index: usize,
+};
+
+const Mono = struct {
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    symbols: *const resolve.SymbolTable,
+    diags: *diagnostics.Diagnostics,
+    program: ast.Program,
+    functions: std.ArrayList(tir.Function),
+    ast_to_tir: []?usize,
+    instances: std.ArrayList(Instance),
+    pending: std.ArrayList(Job),
+
+    fn find(m: *Mono, ast_index: usize, args: []const Type) ?usize {
+        outer: for (m.instances.items) |inst| {
+            if (inst.ast_index != ast_index) continue;
+            if (inst.args.len != args.len) continue;
+            for (inst.args, args) |a, b| {
+                if (!Type.eql(a, b)) continue :outer;
+            }
+            return inst.tir_index;
+        }
+        return null;
+    }
+
+    fn instantiate(m: *Mono, ast_index: usize, args: []const Type) Error!usize {
+        if (m.find(ast_index, args)) |index| return index;
+
+        const tir_index = m.functions.items.len;
+        try m.functions.append(m.arena, undefined);
+
+        const owned = try m.arena.dupe(Type, args);
+        try m.instances.append(m.gpa, .{
+            .ast_index = ast_index,
+            .args = owned,
+            .tir_index = tir_index,
+        });
+        try m.pending.append(m.gpa, .{
+            .ast_index = ast_index,
+            .args = owned,
+            .tir_index = tir_index,
+        });
+
+        return tir_index;
+    }
+};
+
 const Fn = struct {
     arena: std.mem.Allocator,
     gpa: std.mem.Allocator,
     symbols: *const resolve.SymbolTable,
     diags: *diagnostics.Diagnostics,
+    mono: *Mono,
+    type_args: []const Type,
     bindings: std.ArrayList(Binding),
     locals: std.ArrayList(tir.Local),
     depth: u32,
+
+    fn subst(f: *Fn, ty: Type) Error!Type {
+        if (f.type_args.len == 0) return ty;
+        return types.substitute(f.arena, ty, f.type_args);
+    }
 
     fn deinit(f: *Fn) void {
         f.bindings.deinit(f.gpa);
@@ -91,21 +155,87 @@ pub fn run(
     symbols: *const resolve.SymbolTable,
     diags: *diagnostics.Diagnostics,
 ) Error!tir.Program {
-    var functions: std.ArrayList(tir.Function) = .empty;
+    const ast_to_tir = try arena.alloc(?usize, program.fns.len);
+    @memset(ast_to_tir, null);
 
-    for (program.fns, 0..) |f, index| {
+    var mono: Mono = .{
+        .arena = arena,
+        .gpa = gpa,
+        .symbols = symbols,
+        .diags = diags,
+        .program = program,
+        .functions = .empty,
+        .ast_to_tir = ast_to_tir,
+        .instances = .empty,
+        .pending = .empty,
+    };
+    defer mono.instances.deinit(gpa);
+    defer mono.pending.deinit(gpa);
+
+    for (program.fns, 0..) |_, index| {
+        if (symbols.signature(index).isGeneric()) continue;
+        ast_to_tir[index] = mono.functions.items.len;
+        try mono.functions.append(arena, undefined);
+    }
+
+    for (program.fns, 0..) |_, index| {
+        if (ast_to_tir[index]) |tir_index| {
+            const lowered = try lowerFunction(&mono, index, &.{}, tir_index);
+            mono.functions.items[tir_index] = lowered;
+        }
+    }
+
+    while (mono.pending.pop()) |job| {
+        const lowered = try lowerFunction(&mono, job.ast_index, job.args, job.tir_index);
+        mono.functions.items[job.tir_index] = lowered;
+    }
+
+    return .{
+        .functions = try mono.functions.toOwnedSlice(arena),
+        .structs = symbols.structs,
+        .enums = symbols.enums,
+    };
+}
+
+fn lowerFunction(
+    mono: *Mono,
+    index: usize,
+    type_args: []const Type,
+    tir_index: usize,
+) Error!tir.Function {
+    const arena = mono.arena;
+    const gpa = mono.gpa;
+    const symbols = mono.symbols;
+    const diags = mono.diags;
+    const program = mono.program;
+    _ = tir_index;
+
+    {
+        const f = program.fns[index];
         var ctx: Fn = .{
             .arena = arena,
             .gpa = gpa,
             .symbols = symbols,
             .diags = diags,
+            .mono = mono,
+            .type_args = type_args,
             .bindings = .empty,
             .locals = .empty,
             .depth = 0,
         };
         defer ctx.deinit();
 
-        const info = symbols.signature(index);
+        const raw = symbols.signature(index);
+        const info: resolve.FnInfo = .{
+            .name = raw.name,
+            .params = blk: {
+                const out = try arena.alloc(Type, raw.params.len);
+                for (raw.params, 0..) |p, i| out[i] = try types.substitute(arena, p, type_args);
+                break :blk out;
+            },
+            .ret = try types.substitute(arena, raw.ret, type_args),
+            .type_param_count = 0,
+        };
 
         for (f.params, 0..) |param, i| {
             if (ctx.declaredAtDepth(param.name)) {
@@ -154,22 +284,39 @@ pub fn run(
             }
         }
 
-        try functions.append(arena, .{
-            .name = f.name,
+        return .{
+            .name = try instanceName(arena, f.name, type_args, symbols),
             .is_entry = symbols.entry != null and symbols.entry.? == index,
             .param_count = param_count,
             .ret = info.ret,
             .locals = try ctx.locals.toOwnedSlice(arena),
             .body = body,
             .span = f.span,
-        });
+        };
     }
+}
 
-    return .{
-        .functions = try functions.toOwnedSlice(arena),
-        .structs = symbols.structs,
-        .enums = symbols.enums,
-    };
+fn instanceName(
+    arena: std.mem.Allocator,
+    name: []const u8,
+    args: []const Type,
+    symbols: *const resolve.SymbolTable,
+) Error![]const u8 {
+    if (args.len == 0) return name;
+
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, name);
+    for (args) |arg| {
+        try out.append(arena, '_');
+        const text = symbols.typeName(arena, arg) catch return error.OutOfMemory;
+        for (text) |ch| {
+            try out.append(arena, switch (ch) {
+                'a'...'z', 'A'...'Z', '0'...'9' => ch,
+                else => '_',
+            });
+        }
+    }
+    return out.toOwnedSlice(arena);
 }
 
 fn rootPlace(f: *Fn, expr: tir.Expr) ?Place {
@@ -375,7 +522,7 @@ fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {
             var ty = init_expr.typeOf();
 
             if (l.ty) |ty_expr| {
-                const annotated = try resolveLocalType(f, ty_expr);
+                const annotated = try f.subst(try resolveLocalType(f, ty_expr));
 
                 if (!annotated.isInvalid() and !ty.isInvalid() and !Type.eql(annotated, ty)) {
                     try f.diags.err(
@@ -450,7 +597,7 @@ fn resolveLocalType(f: *Fn, expr: ast.TypeExpr) Error!Type {
                 n.span,
                 try f.diags.fmt("unknown type `{s}`", .{n.name}),
                 "not a known type",
-                "the built in types are `Int`, `Str` and `Void`",
+                "the built in types are `Int`, `Bool`, `Str` and `Void`",
             );
             return .invalid;
         },
@@ -1144,7 +1291,11 @@ fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
             } };
         },
         .function => |target| {
-            const info = f.symbols.signature(target);
+            const raw = f.symbols.signature(target);
+
+            if (raw.isGeneric()) return lowerGenericCall(f, c, target, raw, lowered);
+
+            const info = raw;
             if (lowered.len != info.params.len) {
                 try f.diags.err(
                     .wrong_arg_count,
@@ -1172,13 +1323,85 @@ fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
                 }
             }
             return .{ .call_function = .{
-                .target = target,
+                .target = f.mono.ast_to_tir[target].?,
                 .args = lowered,
                 .ty = info.ret,
                 .span = c.span,
             } };
         },
     }
+}
+
+fn lowerGenericCall(
+    f: *Fn,
+    c: ast.Call,
+    target: usize,
+    info: resolve.FnInfo,
+    args: []const tir.Expr,
+) Error!tir.Expr {
+    if (args.len != info.params.len) {
+        try f.diags.err(
+            .wrong_arg_count,
+            c.span,
+            try f.diags.fmt("`{s}` takes {d} {s}", .{
+                c.callee,
+                info.params.len,
+                if (info.params.len == 1) "argument" else "arguments",
+            }),
+            try f.diags.fmt("expected {d}, found {d}", .{ info.params.len, args.len }),
+            null,
+        );
+        return .{ .call_builtin = .{ .builtin = .print_line, .args = args, .ty = .invalid, .span = c.span } };
+    }
+
+    const bound = try f.gpa.alloc(?Type, info.type_param_count);
+    defer f.gpa.free(bound);
+    @memset(bound, null);
+
+    for (info.params, args) |declared, arg| {
+        const actual = arg.typeOf();
+        if (actual.isInvalid()) continue;
+        if (!types.unify(declared, actual, bound)) {
+            const want = try types.substitute(f.arena, declared, blk: {
+                const partial = try f.arena.alloc(Type, bound.len);
+                for (bound, 0..) |b, i| partial[i] = b orelse .invalid;
+                break :blk partial;
+            });
+            try f.diags.err(
+                .type_mismatch,
+                arg.spanOf(),
+                "argument type mismatch",
+                try f.diags.fmt("expected `{s}`, found `{s}`", .{
+                    try f.tyName(want),
+                    try f.tyName(actual),
+                }),
+                null,
+            );
+        }
+    }
+
+    const resolved = try f.arena.alloc(Type, info.type_param_count);
+    for (bound, 0..) |b, i| {
+        resolved[i] = b orelse {
+            try f.diags.err(
+                .cannot_infer,
+                c.span,
+                try f.diags.fmt("cannot infer the type parameters of `{s}`", .{c.callee}),
+                "no argument determines it",
+                "annotate the arguments so the type can be worked out",
+            );
+            return .{ .call_builtin = .{ .builtin = .print_line, .args = args, .ty = .invalid, .span = c.span } };
+        };
+    }
+
+    const tir_index = try f.mono.instantiate(target, resolved);
+
+    return .{ .call_function = .{
+        .target = tir_index,
+        .args = args,
+        .ty = try types.substitute(f.arena, info.ret, resolved),
+        .span = c.span,
+    } };
 }
 
 fn parseInt(text: []const u8) !i64 {

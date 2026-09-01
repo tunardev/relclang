@@ -87,6 +87,11 @@ const Parser = struct {
             return null;
         };
 
+        const type_params = try p.parseTypeParams() orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
         p.skipNewlines();
         _ = try p.expect(.l_brace, "expected `{`", null) orelse {
             p.recoverToTopLevel();
@@ -128,6 +133,7 @@ const Parser = struct {
         return .{
             .name = name_tok.value,
             .name_span = name_tok.span,
+            .type_params = type_params,
             .fields = try fields.toOwnedSlice(p.arena),
             .span = Span.merge(kw.span, close.span),
         };
@@ -137,6 +143,11 @@ const Parser = struct {
         const kw = p.advance();
 
         const name_tok = try p.expect(.ident, "expected an enum name", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        const type_params = try p.parseTypeParams() orelse {
             p.recoverToTopLevel();
             return null;
         };
@@ -194,6 +205,7 @@ const Parser = struct {
         return .{
             .name = name_tok.value,
             .name_span = name_tok.span,
+            .type_params = type_params,
             .variants = try variants.toOwnedSlice(p.arena),
             .span = Span.merge(kw.span, close.span),
         };
@@ -325,7 +337,44 @@ const Parser = struct {
         }
 
         const t = try p.expect(.ident, "expected a type name", null) orelse return null;
-        return .{ .named = .{ .name = t.value, .span = t.span } };
+
+        var args: std.ArrayList(ast.TypeExpr) = .empty;
+        var end = t.span;
+
+        if (p.peek() == .lt) {
+            _ = p.advance();
+            while (true) {
+                const arg = try p.parseType() orelse return null;
+                try args.append(p.arena, arg);
+                if (p.peek() != .comma) break;
+                _ = p.advance();
+            }
+            const close = try p.expect(.gt, "expected `>`", "close the type arguments") orelse return null;
+            end = close.span;
+        }
+
+        return .{ .named = .{
+            .name = t.value,
+            .args = try args.toOwnedSlice(p.arena),
+            .span = Span.merge(t.span, end),
+        } };
+    }
+
+    fn parseTypeParams(p: *Parser) Error!?[]const ast.TypeParam {
+        var list: std.ArrayList(ast.TypeParam) = .empty;
+
+        if (p.peek() != .lt) return try list.toOwnedSlice(p.arena);
+
+        _ = p.advance();
+        while (true) {
+            const name = try p.expect(.ident, "expected a type parameter name", null) orelse return null;
+            try list.append(p.arena, .{ .name = name.value, .span = name.span });
+            if (p.peek() != .comma) break;
+            _ = p.advance();
+        }
+        _ = try p.expect(.gt, "expected `>`", "close the type parameters") orelse return null;
+
+        return try list.toOwnedSlice(p.arena);
     }
 
     fn parseFn(p: *Parser) Error!?ast.Fn {
@@ -335,6 +384,12 @@ const Parser = struct {
             p.recoverToTopLevel();
             return null;
         };
+
+        const type_params = try p.parseTypeParams() orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
         _ = try p.expect(.l_paren, "expected `(`", null) orelse {
             p.recoverToTopLevel();
             return null;
@@ -389,6 +444,7 @@ const Parser = struct {
         return .{
             .name = name_tok.value,
             .name_span = name_tok.span,
+            .type_params = type_params,
             .params = try params.toOwnedSlice(p.arena),
             .ret_ty = ret_ty,
             .body = body,
