@@ -74,6 +74,18 @@ and a `Vec` cannot grow while a reference into it is still in use:
     let first = rows.get(0)
     rows.push(other)      # error: cannot change `rows` while it is borrowed
 
+A value that owns memory stays with its owner. It cannot be moved out
+of a reference or out of an array element, and a `&Vec` or `&String`
+cannot be pushed to. Matching on a reference borrows the payloads
+instead of moving them:
+
+    fn count(h: &Holder) -> Int {
+        match h {
+            Some(items) => items.len()    # items is a &Vec<Int>
+            None => 0
+        }
+    }
+
 Generics and traits, resolved at compile time:
 
     trait Show {
@@ -167,7 +179,13 @@ fixed size arrays, ownership, borrow checking, `if`, `while`, growable
 
 Memory is freed for you. A value that owns memory is released when its
 scope ends, or by whoever you hand it to. The compiler decides which,
-so nothing is freed twice and you never write the free yourself.
+so nothing is freed twice and you never write the free yourself. When a
+move only happens on some paths, the generated code carries a flag and
+frees the value exactly when it is still owned.
+
+Indexing out of range and dividing by zero stop the program with an
+error in every build mode. Integer overflow is caught in debug builds
+and wraps in release builds.
 
 A program is a single file for now.
 
@@ -184,6 +202,14 @@ replace it without touching the language.
     zig build
     zig build test
     zig build cases
+    zig fmt --check src tests build.zig
+
+`zig build cases` compiles and runs every program under `tests/cases`.
+The `ok` cases must print their expected output with nothing on stderr,
+so a leak or a double free fails the suite. The `err` cases must produce
+their golden diagnostics, and the `fail` cases must stop with the
+expected run time error. Pass `-Dupdate-goldens=true` to rewrite the
+golden files.
 
 ## License
 

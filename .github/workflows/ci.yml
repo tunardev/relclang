@@ -47,6 +47,9 @@ jobs:
       - name: Version
         run: zig version
 
+      - name: Format
+        run: zig fmt --check src tests build.zig
+
       - name: Build
         run: zig build
 
