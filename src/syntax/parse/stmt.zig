@@ -124,7 +124,3 @@ pub fn parseBlock(p: *Parser) Error!?ast.Block {
         .span = Span.merge(open.span, close.span),
     };
 }
-
-pub fn parseBlock2(p: *Parser) Error!?ast.Block {
-    return parseBlock(p);
-}

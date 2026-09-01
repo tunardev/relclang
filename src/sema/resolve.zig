@@ -5,7 +5,6 @@ const lexer = @import("../syntax/lexer.zig");
 const parser = @import("../syntax/parser.zig");
 const ast = @import("../syntax/ast.zig");
 const types = @import("types.zig");
-const typecheck = @import("type_rules.zig");
 
 const symbols_mod = @import("symbols.zig");
 

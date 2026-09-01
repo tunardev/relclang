@@ -5,7 +5,6 @@ const ast = @import("../../syntax/ast.zig");
 const tir = @import("../../ir/tir.zig");
 const types = @import("../types.zig");
 const resolve = @import("../resolve.zig");
-const typecheck = @import("../type_rules.zig");
 
 const Span = source.Span;
 const Type = types.Type;
@@ -50,14 +49,12 @@ pub fn run(
 
     for (symbols.all_fns, 0..) |_, index| {
         if (ast_to_tir[index]) |tir_index| {
-            const lowered = try lowerFunction(&mono, index, &.{}, tir_index);
-            mono.functions.items[tir_index] = lowered;
+            mono.functions.items[tir_index] = try lowerFunction(&mono, index, &.{});
         }
     }
 
     while (mono.pending.pop()) |job| {
-        const lowered = try lowerFunction(&mono, job.ast_index, job.args, job.tir_index);
-        mono.functions.items[job.tir_index] = lowered;
+        mono.functions.items[job.tir_index] = try lowerFunction(&mono, job.ast_index, job.args);
     }
 
     return .{
@@ -71,113 +68,109 @@ pub fn lowerFunction(
     mono: *Mono,
     index: usize,
     type_args: []const Type,
-    tir_index: usize,
 ) Error!tir.Function {
     const arena = mono.arena;
     const gpa = mono.gpa;
     const symbols = mono.symbols;
     const diags = mono.diags;
-    _ = tir_index;
 
-    {
-        const f = symbols.all_fns[index];
-        var ctx: Fn = .{
-            .arena = arena,
-            .gpa = gpa,
-            .symbols = symbols,
-            .diags = diags,
-            .mono = mono,
-            .name = f.name,
-            .ret_ty = .void,
-            .param_count = 0,
-            .type_args = type_args,
-            .expected = null,
-            .temps = .empty,
-            .bindings = .empty,
-            .locals = .empty,
-            .depth = 0,
-        };
-        defer ctx.deinit();
+    const f = symbols.all_fns[index];
+    var ctx: Fn = .{
+        .arena = arena,
+        .gpa = gpa,
+        .symbols = symbols,
+        .diags = diags,
+        .mono = mono,
+        .name = f.name,
+        .ret_ty = .void,
+        .param_count = 0,
+        .type_args = type_args,
+        .expected = null,
+        .temps = .empty,
+        .bindings = .empty,
+        .locals = .empty,
+        .depth = 0,
+    };
+    defer ctx.deinit();
 
-        const raw = symbols.signature(index);
-        const info: resolve.FnInfo = .{
-            .name = raw.name,
-            .params = blk: {
-                const out = try arena.alloc(Type, raw.params.len);
-                for (raw.params, 0..) |p, i| out[i] = try types.substitute(arena, p, type_args);
-                break :blk out;
-            },
-            .ret = try types.substitute(arena, raw.ret, type_args),
-            .type_param_count = 0,
-        };
+    const raw = symbols.signature(index);
+    const info: resolve.FnInfo = .{
+        .name = raw.name,
+        .params = blk: {
+            const out = try arena.alloc(Type, raw.params.len);
+            for (raw.params, 0..) |p, i| out[i] = try types.substitute(arena, p, type_args);
+            break :blk out;
+        },
+        .ret = try types.substitute(arena, raw.ret, type_args),
+        .type_param_count = 0,
+    };
 
-        var slot_offset: usize = 0;
-        if (f.has_self) {
-            _ = try ctx.declareMut("self", info.params[0], false);
-            slot_offset = 1;
+    var slot_offset: usize = 0;
+    if (f.has_self) {
+        _ = try ctx.declareMut("self", info.params[0], false);
+        slot_offset = 1;
+    }
+
+    for (f.params, 0..) |param, i| {
+        if (ctx.declaredAtDepth(param.name)) {
+            try diags.err(
+                .duplicate_binding,
+                param.name_span,
+                try diags.fmt("`{s}` is already a parameter", .{param.name}),
+                "duplicate parameter",
+                null,
+            );
         }
+        _ = try ctx.declareMut(param.name, info.params[i + slot_offset], false);
+    }
 
-        for (f.params, 0..) |param, i| {
-            if (ctx.declaredAtDepth(param.name)) {
+    const param_count: u32 = @intCast(f.params.len + slot_offset);
+    ctx.param_count = param_count;
+    ctx.ret_ty = info.ret;
+    ctx.expected = if (info.ret == .void) null else info.ret;
+
+    const body = try lowerBlock(&ctx, f.body, info.ret != .void);
+
+    if (body.result) |result| try ctx.checkEscape(result.*, f.name);
+
+    if (info.ret != .void and !body.diverges()) {
+        if (body.result) |result| {
+            const ty = result.typeOf();
+            if (!ty.isInvalid() and !Type.eql(ty, info.ret)) {
                 try diags.err(
-                    .duplicate_binding,
-                    param.name_span,
-                    try diags.fmt("`{s}` is already a parameter", .{param.name}),
-                    "duplicate parameter",
+                    .missing_return,
+                    result.spanOf(),
+                    "the final expression does not match the return type",
+                    try diags.fmt("expected `{s}`, found `{s}`", .{
+                        try symbols.typeName(diags.arena.allocator(), info.ret),
+                        try symbols.typeName(diags.arena.allocator(), ty),
+                    }),
                     null,
                 );
             }
-            _ = try ctx.declareMut(param.name, info.params[i + slot_offset], false);
+        } else {
+            try diags.err(
+                .missing_return,
+                if (f.ret_ty) |t| t.spanOf() else f.name_span,
+                try diags.fmt("`{s}` must end with a `{s}` value", .{
+                    f.name,
+                    try symbols.typeName(diags.arena.allocator(), info.ret),
+                }),
+                "no value is returned",
+                "the last line of the body is its return value",
+            );
         }
-
-        const param_count: u32 = @intCast(f.params.len + slot_offset);
-        ctx.param_count = param_count;
-        ctx.ret_ty = info.ret;
-        ctx.expected = if (info.ret == .void) null else info.ret;
-
-        const body = try lowerBlock(&ctx, f.body, info.ret != .void);
-
-        if (body.result) |result| try ctx.checkEscape(result.*, f.name);
-
-        if (info.ret != .void and !body.diverges()) {
-            if (body.result) |result| {
-                const ty = result.typeOf();
-                if (!ty.isInvalid() and !Type.eql(ty, info.ret)) {
-                    try diags.err(
-                        .missing_return,
-                        result.spanOf(),
-                        "the final expression does not match the return type",
-                        try diags.fmt("expected `{s}`, found `{s}`", .{
-                            try symbols.typeName(diags.arena.allocator(), info.ret),
-                            try symbols.typeName(diags.arena.allocator(), ty),
-                        }),
-                        null,
-                    );
-                }
-            } else {
-                try diags.err(
-                    .missing_return,
-                    if (f.ret_ty) |t| t.spanOf() else f.name_span,
-                    try diags.fmt("`{s}` must end with a `{s}` value", .{
-                        f.name,
-                        try symbols.typeName(diags.arena.allocator(), info.ret),
-                    }),
-                    "no value is returned",
-                    "the last line of the body is its return value",
-                );
-            }
-        }
-
-        return .{
-            .name = try instanceName(arena, f.name, type_args, symbols),
-            .is_entry = symbols.entry != null and symbols.entry.? == index,
-            .param_count = param_count,
-            .ret = info.ret,
-            .locals = try ctx.locals.toOwnedSlice(arena),
-            .body = body,
-            .span = f.span,
-        };
     }
+
+    return .{
+        .name = try instanceName(arena, f.name, type_args, symbols),
+        .is_entry = symbols.entry != null and symbols.entry.? == index,
+        .param_count = param_count,
+        .ret = info.ret,
+        .locals = try ctx.locals.toOwnedSlice(arena),
+        .body = body,
+        .span = f.span,
+    };
 }
 
 pub fn instanceName(

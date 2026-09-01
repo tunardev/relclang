@@ -18,8 +18,6 @@ pub const Parser = struct {
     no_struct_lit: bool = false,
 };
 
-
-
 pub fn peek(p: *Parser) Kind {
     return p.tokens[p.pos].kind;
 }

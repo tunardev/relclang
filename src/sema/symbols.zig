@@ -76,13 +76,6 @@ pub const TraitMethod = struct {
 pub const TraitInfo = struct {
     name: []const u8,
     methods: []TraitMethod,
-
-    pub fn hasMethod(t: TraitInfo, name: []const u8) bool {
-        for (t.methods) |m| {
-            if (std.mem.eql(u8, m.name, name)) return true;
-        }
-        return false;
-    }
 };
 
 pub const ImplInfo = struct {

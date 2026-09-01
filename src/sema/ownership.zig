@@ -26,7 +26,6 @@ const Checker = struct {
     diags: *diagnostics.Diagnostics,
     structs: []const types.StructDef,
     enums: []const types.EnumDef,
-    program: tir.Program,
     func: tir.Function,
     states: []State,
     moved_at: []Span,
@@ -434,23 +433,19 @@ pub fn check(
         @memset(moved_at, source.Span.zero);
         for (0..func.param_count) |i| states[i] = .owned;
 
-        var borrows: std.ArrayList(ActiveBorrow) = .empty;
-        defer borrows.deinit(gpa);
-
         var c: Checker = .{
             .gpa = gpa,
             .diags = diags,
             .structs = program.structs,
             .enums = program.enums,
-            .program = program,
             .func = func,
             .states = states,
             .moved_at = moved_at,
-            .borrows = borrows,
+            .borrows = .empty,
             .persist_borrows = false,
         };
+        defer c.borrows.deinit(gpa);
 
         try c.checkBlock(func.body);
-        borrows = c.borrows;
     }
 }

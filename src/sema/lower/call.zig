@@ -5,7 +5,6 @@ const ast = @import("../../syntax/ast.zig");
 const tir = @import("../../ir/tir.zig");
 const types = @import("../types.zig");
 const resolve = @import("../resolve.zig");
-const typecheck = @import("../type_rules.zig");
 
 const Span = source.Span;
 const Type = types.Type;

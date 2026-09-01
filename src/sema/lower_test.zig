@@ -607,8 +607,7 @@ test "bool literals and logic type check" {
 }
 
 test "a generic function instantiates once per type" {
-    var l = try lowerText(testing.allocator,
-        "fn id<T>(x: T) -> T {\n    x\n}\n" ++
+    var l = try lowerText(testing.allocator, "fn id<T>(x: T) -> T {\n    x\n}\n" ++
         "fn main() {\n    println(id(1))\n    println(id(\"a\"))\n    println(id(2))\n}\n");
     defer l.deinit();
 
@@ -622,8 +621,7 @@ test "a generic function instantiates once per type" {
 }
 
 test "instances carry substituted types" {
-    var l = try lowerText(testing.allocator,
-        "fn id<T>(x: T) -> T {\n    x\n}\n" ++
+    var l = try lowerText(testing.allocator, "fn id<T>(x: T) -> T {\n    x\n}\n" ++
         "fn main() {\n    println(id(1))\n}\n");
     defer l.deinit();
 
@@ -637,8 +635,7 @@ test "instances carry substituted types" {
 }
 
 test "a generic function is not emitted uninstantiated" {
-    var l = try lowerText(testing.allocator,
-        "fn unused<T>(x: T) -> T {\n    x\n}\n" ++
+    var l = try lowerText(testing.allocator, "fn unused<T>(x: T) -> T {\n    x\n}\n" ++
         "fn main() {\n    println(1)\n}\n");
     defer l.deinit();
 
@@ -647,32 +644,28 @@ test "a generic function is not emitted uninstantiated" {
 }
 
 test "conflicting inference reports a type mismatch" {
-    var l = try lowerText(testing.allocator,
-        "fn pair<T>(a: T, b: T) -> T {\n    a\n}\n" ++
+    var l = try lowerText(testing.allocator, "fn pair<T>(a: T, b: T) -> T {\n    a\n}\n" ++
         "fn main() {\n    println(pair(1, \"two\"))\n}\n");
     defer l.deinit();
     try testing.expect(l.has(.type_mismatch));
 }
 
 test "an uninferable parameter reports E0032" {
-    var l = try lowerText(testing.allocator,
-        "fn make<T>() -> Int {\n    1\n}\n" ++
+    var l = try lowerText(testing.allocator, "fn make<T>() -> Int {\n    1\n}\n" ++
         "fn main() {\n    println(make())\n}\n");
     defer l.deinit();
     try testing.expect(l.has(.cannot_infer));
 }
 
 test "generics unify through references" {
-    var l = try lowerText(testing.allocator,
-        "fn deref<T>(x: &T) -> Int {\n    1\n}\n" ++
+    var l = try lowerText(testing.allocator, "fn deref<T>(x: &T) -> Int {\n    1\n}\n" ++
         "fn main() {\n    let n = 5\n    println(deref(&n))\n}\n");
     defer l.deinit();
     try testing.expect(!l.diags.hasErrors());
 }
 
 test "a trait method resolves through the impl" {
-    var l = try lowerText(testing.allocator,
-        "trait Show {\n    fn show(self) -> Str\n}\n" ++
+    var l = try lowerText(testing.allocator, "trait Show {\n    fn show(self) -> Str\n}\n" ++
         "struct U {\n    n: Str\n}\n" ++
         "impl Show for U {\n    fn show(self) -> Str {\n        self.n\n    }\n}\n" ++
         "fn main() {\n    let u = U { n: \"a\" }\n    println(u.show())\n}\n");
@@ -681,16 +674,14 @@ test "a trait method resolves through the impl" {
 }
 
 test "an unknown method reports E0034" {
-    var l = try lowerText(testing.allocator,
-        "struct P {\n    x: Int\n}\n" ++
+    var l = try lowerText(testing.allocator, "struct P {\n    x: Int\n}\n" ++
         "fn main() {\n    let p = P { x: 1 }\n    println(p.nope())\n}\n");
     defer l.deinit();
     try testing.expect(l.has(.unknown_method));
 }
 
 test "an unsatisfied bound reports E0035" {
-    var l = try lowerText(testing.allocator,
-        "trait Show {\n    fn show(self) -> Str\n}\n" ++
+    var l = try lowerText(testing.allocator, "trait Show {\n    fn show(self) -> Str\n}\n" ++
         "struct A {\n    v: Int\n}\n" ++
         "struct B {\n    v: Int\n}\n" ++
         "impl Show for A {\n    fn show(self) -> Str {\n        \"a\"\n    }\n}\n" ++
@@ -701,8 +692,7 @@ test "an unsatisfied bound reports E0035" {
 }
 
 test "a satisfied bound lowers cleanly" {
-    var l = try lowerText(testing.allocator,
-        "trait Show {\n    fn show(self) -> Str\n}\n" ++
+    var l = try lowerText(testing.allocator, "trait Show {\n    fn show(self) -> Str\n}\n" ++
         "struct A {\n    v: Int\n}\n" ++
         "impl Show for A {\n    fn show(self) -> Str {\n        \"a\"\n    }\n}\n" ++
         "fn go<T: Show>(x: T) -> Str {\n    x.show()\n}\n" ++
@@ -712,8 +702,7 @@ test "a satisfied bound lowers cleanly" {
 }
 
 test "the question mark unwraps and propagates" {
-    var l = try lowerText(testing.allocator,
-        "enum Result<T, E> {\n    Ok(T)\n    Err(E)\n}\n" ++
+    var l = try lowerText(testing.allocator, "enum Result<T, E> {\n    Ok(T)\n    Err(E)\n}\n" ++
         "fn a() -> Result<Int, Str> {\n    Ok(1)\n}\n" ++
         "fn b() -> Result<Int, Str> {\n    let v = a()?\n    Ok(v + 1)\n}\n" ++
         "fn main() {\n}\n");
@@ -722,8 +711,7 @@ test "the question mark unwraps and propagates" {
 }
 
 test "the question mark rejects mismatched error types" {
-    var l = try lowerText(testing.allocator,
-        "enum Result<T, E> {\n    Ok(T)\n    Err(E)\n}\n" ++
+    var l = try lowerText(testing.allocator, "enum Result<T, E> {\n    Ok(T)\n    Err(E)\n}\n" ++
         "fn a() -> Result<Int, Str> {\n    Ok(1)\n}\n" ++
         "fn b() -> Result<Int, Int> {\n    let v = a()?\n    Ok(v)\n}\n" ++
         "fn main() {\n}\n");
@@ -732,16 +720,14 @@ test "the question mark rejects mismatched error types" {
 }
 
 test "an early return type checks" {
-    var l = try lowerText(testing.allocator,
-        "fn f(n: Int) -> Int {\n    if n < 0 {\n        return 0\n    }\n    n\n}\n" ++
+    var l = try lowerText(testing.allocator, "fn f(n: Int) -> Int {\n    if n < 0 {\n        return 0\n    }\n    n\n}\n" ++
         "fn main() {\n}\n");
     defer l.deinit();
     try testing.expect(!l.diags.hasErrors());
 }
 
 test "a wrongly typed return reports E0016" {
-    var l = try lowerText(testing.allocator,
-        "fn f() -> Int {\n    return \"no\"\n}\n" ++
+    var l = try lowerText(testing.allocator, "fn f() -> Int {\n    return \"no\"\n}\n" ++
         "fn main() {\n}\n");
     defer l.deinit();
     try testing.expect(l.has(.missing_return));

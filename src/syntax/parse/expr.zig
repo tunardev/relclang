@@ -14,7 +14,7 @@ const Error = core.Error;
 const advance = @import("core.zig").advance;
 const current = @import("core.zig").current;
 const expect = @import("core.zig").expect;
-const parseBlock2 = @import("stmt.zig").parseBlock2;
+const parseBlock = @import("stmt.zig").parseBlock;
 const peek = @import("core.zig").peek;
 const recoverInBlock = @import("core.zig").recoverInBlock;
 const skipNewlines = @import("core.zig").skipNewlines;
@@ -329,7 +329,7 @@ pub fn parseIf(p: *Parser) Error!?ast.Expr {
     const cond = try parseCondition(p) orelse return null;
     skipNewlines(p);
 
-    const then_block = try parseBlock2(p) orelse return null;
+    const then_block = try parseBlock(p) orelse return null;
 
     var else_block: ?ast.Block = null;
     var else_if: ?*const ast.Expr = null;
@@ -349,7 +349,7 @@ pub fn parseIf(p: *Parser) Error!?ast.Expr {
             else_if = ptr;
             end = nested.spanOf();
         } else {
-            const b = try parseBlock2(p) orelse return null;
+            const b = try parseBlock(p) orelse return null;
             else_block = b;
             end = b.span;
         }
@@ -375,7 +375,7 @@ pub fn parseWhile(p: *Parser) Error!?ast.Expr {
     const cond = try parseCondition(p) orelse return null;
     skipNewlines(p);
 
-    const body = try parseBlock2(p) orelse return null;
+    const body = try parseBlock(p) orelse return null;
 
     const cond_ptr = try p.arena.create(ast.Expr);
     cond_ptr.* = cond;

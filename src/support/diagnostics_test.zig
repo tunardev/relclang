@@ -204,18 +204,18 @@ test "hasErrors tracks severity" {
 
 test "every code has a distinct id" {
     const codes = [_]Code{
-        .unexpected_token, .unterminated_string, .unknown_escape,
-        .unknown_function, .missing_main,        .duplicate_function,
-        .wrong_arg_count,  .type_mismatch,       .unexpected_char,
-        .invalid_number,   .duplicate_binding,   .unknown_variable,
-        .invalid_operand,  .integer_overflow,    .unused_value,
-        .missing_return,   .bad_signature,      .unknown_struct,
-        .unknown_field,    .missing_field,      .recursive_struct,
-        .not_indexable,    .non_exhaustive,     .unreachable_arm,
-        .bad_pattern,     .not_assignable,     .immutable_assign,
-        .use_after_move,  .move_in_loop,       .borrow_conflict,
-        .move_while_borrowed, .cannot_infer,      .unknown_trait,
-        .unknown_method,      .missing_impl,       .escaping_reference,
+        .unexpected_token,    .unterminated_string, .unknown_escape,
+        .unknown_function,    .missing_main,        .duplicate_function,
+        .wrong_arg_count,     .type_mismatch,       .unexpected_char,
+        .invalid_number,      .duplicate_binding,   .unknown_variable,
+        .invalid_operand,     .integer_overflow,    .unused_value,
+        .missing_return,      .bad_signature,       .unknown_struct,
+        .unknown_field,       .missing_field,       .recursive_struct,
+        .not_indexable,       .non_exhaustive,      .unreachable_arm,
+        .bad_pattern,         .not_assignable,      .immutable_assign,
+        .use_after_move,      .move_in_loop,        .borrow_conflict,
+        .move_while_borrowed, .cannot_infer,        .unknown_trait,
+        .unknown_method,      .missing_impl,        .escaping_reference,
         .reference_field,
     };
     for (codes, 0..) |a, i| {

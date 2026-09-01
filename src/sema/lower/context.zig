@@ -5,12 +5,9 @@ const ast = @import("../../syntax/ast.zig");
 const tir = @import("../../ir/tir.zig");
 const types = @import("../types.zig");
 const resolve = @import("../resolve.zig");
-const typecheck = @import("../type_rules.zig");
 
-const Span = source.Span;
 const Type = types.Type;
-
-
+const Mono = @import("mono.zig").Mono;
 
 pub const Error = error{OutOfMemory};
 
@@ -32,7 +29,7 @@ pub const Fn = struct {
     gpa: std.mem.Allocator,
     symbols: *resolve.SymbolTable,
     diags: *diagnostics.Diagnostics,
-    mono: *@import("mono.zig").Mono,
+    mono: *Mono,
     name: []const u8,
     ret_ty: Type,
     param_count: u32,
