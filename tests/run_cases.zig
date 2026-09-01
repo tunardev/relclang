@@ -32,7 +32,7 @@ test "error cases match their golden output" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    var dir = try std.Io.Dir.cwd().openDir(io, err_dir, .{});
+    var dir = try std.Io.Dir.cwd().openDir(io, err_dir, .{ .iterate = true });
     defer dir.close(io);
 
     var it = dir.iterate();
@@ -88,7 +88,7 @@ test "ok cases build and produce the expected output" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    var dir = try std.Io.Dir.cwd().openDir(io, ok_dir, .{});
+    var dir = try std.Io.Dir.cwd().openDir(io, ok_dir, .{ .iterate = true });
     defer dir.close(io);
 
     var it = dir.iterate();
