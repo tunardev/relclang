@@ -23,6 +23,7 @@ const lexer = @import("../syntax/lexer.zig");
 const parser = @import("../syntax/parser.zig");
 const resolve = @import("../sema/resolve.zig");
 const lower = @import("../sema/lower.zig");
+const ownership = @import("../sema/ownership.zig");
 
 fn emitText(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -38,6 +39,7 @@ fn emitText(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var symbols = try resolve.run(arena, gpa, parsed, &d);
     defer symbols.deinit();
     const program = try lower.run(arena, gpa, parsed, &symbols, &d);
+    try ownership.check(gpa, program, &d);
 
     const out = try emit(arena, program);
     return gpa.dupe(u8, out);
@@ -220,4 +222,65 @@ test "aggregate deinit releases fields through the runtime drop helper" {
 
     try testing.expect(std.mem.indexOf(u8, out, "rt.drop(&self.f0_items);") != null);
     try testing.expect(std.mem.indexOf(u8, out, "rt.drop(&payload.f0);") != null);
+}
+
+test "a moved local gets a live flag that guards its release" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa,
+        \\fn consume(v: Vec<Int>) {
+        \\    println(v.len())
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<Int> = Vec.new(alloc)
+        \\    if v.len() > 5 {
+        \\        consume(v)
+        \\    }
+        \\}
+        \\
+    );
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "var v1_v_live = true;") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "defer if (v1_v_live) rt.drop(&v1_v);") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "const a0_0 = v1_v; v1_v_live = false; break :m0 (try rc_consume(a0_0));") != null);
+}
+
+test "moving one field releases its owning siblings" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa,
+        \\struct Bag {
+        \\    a: Vec<Int>
+        \\    n: Int
+        \\    b: Vec<Int>
+        \\}
+        \\fn consume(v: Vec<Int>) {
+        \\    println(v.len())
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let bag = Bag { a: Vec.new(alloc), n: 1, b: Vec.new(alloc) }
+        \\    consume(bag.a)
+        \\}
+        \\
+    );
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "v1_bag_live = false; rt.drop(&v1_bag.f2_b); break :m0") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "rt.drop(&v1_bag.f1_n)") == null);
+}
+
+test "reassigning an owned local releases the old value first" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa,
+        \\fn make(alloc: Allocator) -> Vec<Int> {
+        \\    Vec.new(alloc)
+        \\}
+        \\fn main(alloc: Allocator) {
+        \\    let mut v = make(alloc)
+        \\    v = make(alloc)
+        \\}
+        \\
+    );
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "{ const __new = (try rc_make(v0_alloc)); rt.drop(&v1_v); v1_v = __new; }") != null);
 }

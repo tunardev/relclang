@@ -1,0 +1,93 @@
+struct Bag {
+    a: Vec<Int>
+    b: Vec<Int>
+}
+
+enum Holder {
+    Some(Vec<Int>)
+    None
+}
+
+enum R {
+    Ok(Int)
+    Err(Str)
+}
+
+fn make(alloc: Allocator, n: Int) -> Vec<Int> {
+    let v: Vec<Int> = Vec.new(alloc)
+    let mut i = 0
+    while i < n {
+        v.push(i)
+        i = i + 1
+    }
+    v
+}
+
+fn consume(v: Vec<Int>) {
+    println(v.len())
+}
+
+fn hold(h: Holder) {
+    println("held")
+}
+
+fn take_bag(b: Bag) {
+    println(b.a.len() + b.b.len())
+}
+
+fn pick(alloc: Allocator, first: Bool) -> Vec<Int> {
+    let a = make(alloc, 1)
+    let b = make(alloc, 2)
+    if first {
+        return a
+    }
+    b
+}
+
+fn fails() -> R {
+    Err("nope")
+}
+
+fn both(v: Vec<Int>, n: Int) -> R {
+    Ok(v.len() + n)
+}
+
+fn run(alloc: Allocator) -> R {
+    let v = make(alloc, 4)
+    both(v, fails()?)
+}
+
+fn main(alloc: Allocator) {
+    let v = make(alloc, 3)
+    if v.len() > 5 {
+        consume(v)
+    }
+    println("kept")
+
+    let mut w = make(alloc, 1)
+    w = make(alloc, 2)
+    println(w.len())
+
+    let bag = Bag { a: make(alloc, 1), b: make(alloc, 2) }
+    take_bag(bag)
+
+    let partial = Bag { a: make(alloc, 3), b: make(alloc, 4) }
+    consume(partial.a)
+
+    let mut swap = Bag { a: make(alloc, 1), b: make(alloc, 1) }
+    swap.a = make(alloc, 5)
+    println(swap.a.len())
+
+    hold(Some(make(alloc, 2)))
+    hold(None)
+
+    let first = pick(alloc, true)
+    println(first.len())
+    let second = pick(alloc, false)
+    println(second.len())
+
+    match run(alloc) {
+        Ok(n) => println(n)
+        Err(e) => println(e)
+    }
+}

@@ -1,12 +1,13 @@
 const std = @import("std");
 const tir = @import("../../ir/tir.zig");
 const types = @import("../../sema/types.zig");
-const runtime = @import("../runtime.zig");
 
 pub const prefix = "rc_";
 pub const Error = error{ OutOfMemory, WriteFailed };
 
-
+pub fn regOf(program: tir.Program) types.Registry {
+    return .{ .structs = program.structs, .enums = program.enums };
+}
 
 pub fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void {
     switch (ty) {

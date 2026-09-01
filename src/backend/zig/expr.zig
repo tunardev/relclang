@@ -1,18 +1,106 @@
 const std = @import("std");
 const tir = @import("../../ir/tir.zig");
 const types = @import("../../sema/types.zig");
-const runtime = @import("../runtime.zig");
 
-pub const prefix = "rc_";
-pub const Error = error{ OutOfMemory, WriteFailed };
+const zig_types = @import("types.zig");
+const prefix = zig_types.prefix;
+const Error = zig_types.Error;
+const emitType = zig_types.emitType;
+const regOf = zig_types.regOf;
 
-const emitType = @import("types.zig").emitType;
-const emitValueBlock = @import("stmt.zig").emitValueBlock;
-const emitVoidBlock = @import("stmt.zig").emitVoidBlock;
-const indent = @import("stmt.zig").indent;
+const stmt_mod = @import("stmt.zig");
+const emitValueBlock = stmt_mod.emitValueBlock;
+const emitVoidBlock = stmt_mod.emitVoidBlock;
+const indent = stmt_mod.indent;
 
-fn emitTypeOf(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void {
-    return @import("types.zig").emitType(w, program, ty);
+pub fn needsFlag(program: tir.Program, f: tir.Function, slot: u32) bool {
+    const local = f.locals[slot];
+    return local.moved and types.needsDrop(local.ty, regOf(program));
+}
+
+fn placeRoot(e: tir.Expr) ?u32 {
+    return switch (e) {
+        .local_ref => |l| l.slot,
+        .field => |x| placeRoot(x.base.*),
+        else => null,
+    };
+}
+
+pub fn moveRoot(program: tir.Program, f: tir.Function, e: tir.Expr) ?u32 {
+    if (!types.needsDrop(e.typeOf(), regOf(program))) return null;
+    const slot = placeRoot(e) orelse return null;
+    return if (needsFlag(program, f, slot)) slot else null;
+}
+
+pub fn emitFlagName(w: *std.Io.Writer, f: tir.Function, slot: u32) Error!void {
+    try w.print("v{d}_{s}_live", .{ slot, f.locals[slot].name });
+}
+
+fn emitMoveClear(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32, e: tir.Expr) Error!void {
+    switch (e) {
+        .local_ref => |l| {
+            try emitFlagName(w, f, l.slot);
+            try w.writeAll(" = false; ");
+        },
+        .field => |fa| {
+            try emitMoveClear(w, program, f, lbl, fa.base.*);
+            const def = program.structs[fa.strukt];
+            for (def.fields, 0..) |field, k| {
+                if (k == fa.field or !types.needsDrop(field.ty, regOf(program))) continue;
+                try w.writeAll("rt.drop(&");
+                try emitExpr(w, program, f, lbl, fa.base.*);
+                try w.print(".f{d}_{s}); ", .{ k, field.name });
+            }
+        },
+        else => {},
+    }
+}
+
+pub fn emitOwned(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32, e: tir.Expr) Error!void {
+    if (moveRoot(program, f, e) == null) return emitExpr(w, program, f, lbl, e);
+
+    const id = lbl.*;
+    lbl.* += 1;
+    try w.print("(m{d}: {{ ", .{id});
+    try emitMoveClear(w, program, f, lbl, e);
+    try w.print("break :m{d} ", .{id});
+    try emitExpr(w, program, f, lbl, e);
+    try w.writeAll("; })");
+}
+
+pub const Moves = struct {
+    id: ?u32 = null,
+};
+
+pub fn beginMoves(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32, args: []const tir.Expr) Error!Moves {
+    var any = false;
+    for (args) |arg| {
+        if (moveRoot(program, f, arg) != null) any = true;
+    }
+    if (!any) return .{};
+
+    const id = lbl.*;
+    lbl.* += 1;
+    try w.print("(m{d}: {{ ", .{id});
+    for (args, 0..) |arg, i| {
+        try w.print("const a{d}_{d} = ", .{ id, i });
+        try emitExpr(w, program, f, lbl, arg);
+        try w.writeAll("; ");
+    }
+    for (args) |arg| {
+        if (moveRoot(program, f, arg) != null) try emitMoveClear(w, program, f, lbl, arg);
+    }
+    try w.print("break :m{d} ", .{id});
+    return .{ .id = id };
+}
+
+pub fn emitArg(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32, moves: Moves, args: []const tir.Expr, i: usize) Error!void {
+    if (moves.id) |id| return w.print("a{d}_{d}", .{ id, i });
+    try emitExpr(w, program, f, lbl, args[i]);
+}
+
+pub fn endMoves(w: *std.Io.Writer, moves: Moves) Error!void {
+    if (moves.id != null) try w.writeAll("; })");
 }
 
 fn emitReceiver(
@@ -93,23 +181,27 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
         },
 
         .call_function => |c| {
+            const moves = try beginMoves(w, program, f, lbl, c.args);
             try w.print("(try {s}{s}(", .{ prefix, program.functions[c.target].name });
-            for (c.args, 0..) |arg, i| {
+            for (c.args, 0..) |_, i| {
                 if (i > 0) try w.writeAll(", ");
-                try emitExpr(w, program, f, lbl, arg);
+                try emitArg(w, program, f, lbl, moves, c.args, i);
             }
             try w.writeAll("))");
+            try endMoves(w, moves);
         },
 
         .struct_lit => |s| {
             const def = program.structs[s.strukt];
+            const moves = try beginMoves(w, program, f, lbl, s.fields);
             try w.print("S{d}_{s}{{ ", .{ s.strukt, def.name });
-            for (s.fields, 0..) |value, i| {
+            for (s.fields, 0..) |_, i| {
                 if (i > 0) try w.writeAll(", ");
                 try w.print(".f{d}_{s} = ", .{ i, def.fields[i].name });
-                try emitExpr(w, program, f, lbl, value);
+                try emitArg(w, program, f, lbl, moves, s.fields, i);
             }
             try w.writeAll(" }");
+            try endMoves(w, moves);
         },
 
         .field => |fa| {
@@ -118,14 +210,16 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
         },
 
         .array_lit => |a| {
+            const moves = try beginMoves(w, program, f, lbl, a.elems);
             try w.print("[{d}]", .{a.elems.len});
             try emitType(w, program, a.ty.array.elem.*);
             try w.writeAll("{ ");
-            for (a.elems, 0..) |e, i| {
+            for (a.elems, 0..) |_, i| {
                 if (i > 0) try w.writeAll(", ");
-                try emitExpr(w, program, f, lbl, e);
+                try emitArg(w, program, f, lbl, moves, a.elems, i);
             }
             try w.writeAll(" }");
+            try endMoves(w, moves);
         },
 
         .index => |x| {
@@ -138,19 +232,21 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
         .enum_lit => |lit| {
             const def = program.enums[lit.enumeration];
             const variant = def.variants[lit.variant];
+            const moves = try beginMoves(w, program, f, lbl, lit.payload);
             try w.print("E{d}_{s}{{ .v{d}_{s} = ", .{ lit.enumeration, def.name, lit.variant, variant.name });
             if (lit.payload.len == 0) {
                 try w.writeAll("{}");
             } else {
                 try w.writeAll(".{ ");
-                for (lit.payload, 0..) |value, i| {
+                for (lit.payload, 0..) |_, i| {
                     if (i > 0) try w.writeAll(", ");
                     try w.print(".f{d} = ", .{i});
-                    try emitExpr(w, program, f, lbl, value);
+                    try emitArg(w, program, f, lbl, moves, lit.payload, i);
                 }
                 try w.writeAll(" }");
             }
             try w.writeAll(" }");
+            try endMoves(w, moves);
         },
 
         .borrow => |b| {
@@ -169,7 +265,7 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
             switch (v.op) {
                 .new => {
                     try w.writeAll("rt.Vec(");
-                    try emitTypeOf(w, program, v.ty.vec.elem.*);
+                    try emitType(w, program, v.ty.vec.elem.*);
                     try w.writeAll(").init(");
                     try emitExpr(w, program, f, lbl, v.args[0]);
                     try w.writeAll(")");
@@ -199,21 +295,18 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
                     try emitExpr(w, program, f, lbl, v.args[1]);
                     try w.writeAll("))");
                 },
-                .push => {
+                .push, .set => {
+                    const rest = v.args[1..];
+                    const moves = try beginMoves(w, program, f, lbl, rest);
                     try w.writeAll("(try (");
                     try emitReceiver(w, program, f, lbl, v.args[0]);
-                    try w.writeAll(").push(");
-                    try emitExpr(w, program, f, lbl, v.args[1]);
+                    try w.print(").{s}(", .{if (v.op == .push) "push" else "set"});
+                    for (rest, 0..) |_, i| {
+                        if (i > 0) try w.writeAll(", ");
+                        try emitArg(w, program, f, lbl, moves, rest, i);
+                    }
                     try w.writeAll("))");
-                },
-                .set => {
-                    try w.writeAll("(try (");
-                    try emitReceiver(w, program, f, lbl, v.args[0]);
-                    try w.writeAll(").set(");
-                    try emitExpr(w, program, f, lbl, v.args[1]);
-                    try w.writeAll(", ");
-                    try emitExpr(w, program, f, lbl, v.args[2]);
-                    try w.writeAll("))");
+                    try endMoves(w, moves);
                 },
             }
         },
@@ -227,7 +320,7 @@ pub fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *
             try w.print("b{d}: {{\n", .{id});
             try indent(w, 3);
             try w.writeAll("switch (");
-            try emitExpr(w, program, f, lbl, t.operand.*);
+            try emitOwned(w, program, f, lbl, t.operand.*);
             try w.writeAll(") {\n");
 
             try indent(w, 4);

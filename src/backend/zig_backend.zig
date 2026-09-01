@@ -12,7 +12,8 @@ const Error = zig_types.Error;
 
 const emitType = zig_types.emitType;
 const emitBlockBody = zig_stmt.emitBlockBody;
-const emitExpr = zig_expr.emitExpr;
+const emitOwnedGuard = zig_stmt.emitOwnedGuard;
+const emitOwned = zig_expr.emitOwned;
 const emitLocalName = zig_expr.emitLocalName;
 
 pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
@@ -111,11 +112,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
             try w.writeAll("    var ");
             try emitLocalName(w, f, @intCast(i));
             try w.print(" = p{d}_{s};\n", .{ i, f.locals[i].name });
-            if (!f.locals[i].moved) {
-                try w.writeAll("    defer rt.drop(&");
-                try emitLocalName(w, f, @intCast(i));
-                try w.writeAll(");\n");
-            }
+            try emitOwnedGuard(w, program, f, @intCast(i), 1);
         }
 
         for (0..f.param_count) |i| {
@@ -129,7 +126,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
         try emitBlockBody(w, program, f, &lbl, f.body, 1);
         if (f.body.result) |result| {
             try w.writeAll("    return ");
-            try emitExpr(w, program, f, &lbl, result.*);
+            try emitOwned(w, program, f, &lbl, result.*);
             try w.writeAll(";\n");
         }
         try w.writeAll("}\n\n");
