@@ -7,6 +7,15 @@ pub const source =
     \\
     \\pub const Allocator = std.mem.Allocator;
     \\
+    \\pub fn drop(ptr: anytype) void {
+    \\    const T = @TypeOf(ptr.*);
+    \\    switch (@typeInfo(T)) {
+    \\        .array => for (ptr) |*item| drop(item),
+    \\        .@"struct", .@"union" => if (@hasDecl(T, "deinit")) ptr.deinit(),
+    \\        else => {},
+    \\    }
+    \\}
+    \\
     \\pub const String = struct {
     \\    list: std.ArrayList(u8),
     \\    gpa: Allocator,
@@ -66,11 +75,7 @@ pub const source =
     \\        }
     \\
     \\        pub fn deinit(self: *Self) void {
-    \\            if (@typeInfo(T) == .@"struct" or @typeInfo(T) == .@"union") {
-    \\                if (@hasDecl(T, "deinit")) {
-    \\                    for (self.list.items) |*item| item.deinit();
-    \\                }
-    \\            }
+    \\            for (self.list.items) |*item| drop(item);
     \\            self.list.deinit(self.gpa);
     \\        }
     \\
@@ -90,7 +95,9 @@ pub const source =
     \\
     \\        pub fn set(self: *Self, index: i64, value: T) Error!void {
     \\            if (index < 0 or index >= self.list.items.len) return error.OutOfMemory;
-    \\            self.list.items[@intCast(index)] = value;
+    \\            const slot = &self.list.items[@intCast(index)];
+    \\            drop(slot);
+    \\            slot.* = value;
     \\        }
     \\
     \\        pub fn len(self: *const Self) i64 {

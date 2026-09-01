@@ -56,7 +56,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
                 try w.print("            .v{d}_{s} => |*payload| {{\n", .{ vi, variant.name });
                 for (variant.payload, 0..) |p, pi| {
                     if (!types.needsDrop(p, reg)) continue;
-                    try w.print("                payload.f{d}.deinit();\n", .{pi});
+                    try w.print("                rt.drop(&payload.f{d});\n", .{pi});
                 }
                 try w.writeAll("            },\n");
             }
@@ -78,7 +78,7 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
             try w.print("\n    pub fn deinit(self: *S{d}_{s}) void {{\n", .{ index, def.name });
             for (def.fields, 0..) |field, i| {
                 if (!types.needsDrop(field.ty, reg)) continue;
-                try w.print("        self.f{d}_{s}.deinit();\n", .{ i, field.name });
+                try w.print("        rt.drop(&self.f{d}_{s});\n", .{ i, field.name });
             }
             try w.writeAll("    }\n");
         }
@@ -112,9 +112,9 @@ pub fn emit(arena: std.mem.Allocator, program: tir.Program) Error![]const u8 {
             try emitLocalName(w, f, @intCast(i));
             try w.print(" = p{d}_{s};\n", .{ i, f.locals[i].name });
             if (!f.locals[i].moved) {
-                try w.writeAll("    defer ");
+                try w.writeAll("    defer rt.drop(&");
                 try emitLocalName(w, f, @intCast(i));
-                try w.writeAll(".deinit();\n");
+                try w.writeAll(");\n");
             }
         }
 

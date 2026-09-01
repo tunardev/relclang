@@ -54,9 +54,9 @@ fn emitStmt(
             try w.writeAll(";\n");
             if (types.needsDrop(f.locals[l.slot].ty, regOf(program)) and !f.locals[l.slot].moved) {
                 try indent(w, level);
-                try w.writeAll("defer ");
+                try w.writeAll("defer rt.drop(&");
                 try emitLocalName(w, f, l.slot);
-                try w.writeAll(".deinit();\n");
+                try w.writeAll(");\n");
             }
             if (!f.locals[l.slot].used) {
                 try indent(w, level);

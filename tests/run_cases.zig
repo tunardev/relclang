@@ -112,6 +112,11 @@ test "ok cases build and produce the expected output" {
             return error.RelcFailed;
         }
 
+        if (result.stderr.len != 0) {
+            std.debug.print("{s} wrote to stderr:\n{s}\n", .{ entry.name, result.stderr });
+            return error.UnexpectedStderr;
+        }
+
         const out_name = try std.fmt.allocPrint(gpa, "{s}.out", .{entry.name[0 .. entry.name.len - 4]});
         defer gpa.free(out_name);
 

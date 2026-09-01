@@ -186,3 +186,38 @@ test "a diverging branch in a value if emits no block label" {
     try testing.expect(std.mem.indexOf(u8, out, "break :b0 {}") == null);
     try testing.expect(std.mem.indexOf(u8, out, "break :b0 @as(i64, 2)") != null);
 }
+
+test "owned locals are released through the runtime drop helper" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa,
+        \\fn main(alloc: Allocator) {
+        \\    let v: Vec<Int> = Vec.new(alloc)
+        \\    v.push(1)
+        \\}
+        \\
+    );
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "defer rt.drop(&v1_v);") != null);
+    try testing.expect(std.mem.indexOf(u8, out, ".deinit()") == null);
+}
+
+test "aggregate deinit releases fields through the runtime drop helper" {
+    const gpa = testing.allocator;
+    const out = try emitText(gpa,
+        \\struct Bag {
+        \\    items: [String; 2]
+        \\}
+        \\enum Holder {
+        \\    Some(Vec<Int>)
+        \\    None
+        \\}
+        \\fn main() {
+        \\}
+        \\
+    );
+    defer gpa.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "rt.drop(&self.f0_items);") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "rt.drop(&payload.f0);") != null);
+}

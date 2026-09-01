@@ -1,0 +1,17 @@
+fn label(alloc: Allocator, n: Int) -> String {
+    let s: String = String.new(alloc)
+    s.push("n")
+    s.push_int(n)
+    s
+}
+
+fn main(alloc: Allocator) {
+    let pair = [label(alloc, 1), label(alloc, 2)]
+    println(pair[0])
+    println(pair[1])
+
+    let v: Vec<String> = Vec.new(alloc)
+    v.push(label(alloc, 3))
+    v.set(0, label(alloc, 4))
+    println(v.get(0))
+}
