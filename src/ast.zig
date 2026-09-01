@@ -106,6 +106,7 @@ pub const Expr = union(enum) {
     if_expr: If,
     while_expr: While,
     borrow: Borrow,
+    try_expr: Try,
 
     pub fn spanOf(e: Expr) Span {
         return switch (e) {
@@ -124,6 +125,7 @@ pub const Expr = union(enum) {
             .if_expr => |i| i.span,
             .while_expr => |x| x.span,
             .borrow => |b| b.span,
+            .try_expr => |t| t.span,
         };
     }
 };
@@ -137,6 +139,16 @@ pub const Let = struct {
     span: Span,
 };
 
+pub const Return = struct {
+    value: ?Expr,
+    span: Span,
+};
+
+pub const Try = struct {
+    operand: *const Expr,
+    span: Span,
+};
+
 pub const Assign = struct {
     target: Expr,
     value: Expr,
@@ -147,12 +159,14 @@ pub const Stmt = union(enum) {
     expr: Expr,
     let: Let,
     assign: Assign,
+    ret: Return,
 
     pub fn spanOf(s: Stmt) Span {
         return switch (s) {
             .expr => |e| e.spanOf(),
             .let => |l| l.span,
             .assign => |a| a.span,
+            .ret => |r| r.span,
         };
     }
 };

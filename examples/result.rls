@@ -1,0 +1,24 @@
+enum Result<T, E> {
+    Ok(T)
+    Err(E)
+}
+
+fn halve(n: Int) -> Result<Int, Str> {
+    if n % 2 == 0 {
+        Ok(n / 2)
+    } else {
+        Err("odd number")
+    }
+}
+
+fn quarter(n: Int) -> Result<Int, Str> {
+    let half = halve(n)?
+    halve(half)
+}
+
+fn main() {
+    println(match quarter(20) {
+        Ok(v) => v
+        Err(e) => 0
+    })
+}

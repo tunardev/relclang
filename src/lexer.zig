@@ -117,6 +117,7 @@ pub fn tokenize(
             '.' => .dot,
             ';' => .semicolon,
             '&' => .ampersand,
+            '?' => .question,
             '[' => .l_bracket,
             ']' => .r_bracket,
             '<' => .lt,
@@ -219,6 +220,7 @@ fn keywordOf(name: []const u8) ?Kind {
     if (std.mem.eql(u8, name, "and")) return .kw_and;
     if (std.mem.eql(u8, name, "or")) return .kw_or;
     if (std.mem.eql(u8, name, "not")) return .kw_not;
+    if (std.mem.eql(u8, name, "return")) return .kw_return;
     return null;
 }
 

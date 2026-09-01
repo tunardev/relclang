@@ -1,0 +1,48 @@
+enum Result<T, E> {
+    Ok(T)
+    Err(E)
+}
+
+fn parse(n: Int) -> Result<Int, Str> {
+    if n < 0 {
+        Err("negative")
+    } else {
+        Ok(n * 2)
+    }
+}
+
+fn chain(n: Int) -> Result<Int, Str> {
+    let a = parse(n)?
+    let b = parse(a)?
+    Ok(a + b)
+}
+
+fn show(r: Result<Int, Str>) -> Str {
+    match r {
+        Ok(v) => "ok"
+        Err(e) => e
+    }
+}
+
+fn value(r: Result<Int, Str>) -> Int {
+    match r {
+        Ok(v) => v
+        Err(e) => 0 - 1
+    }
+}
+
+fn early(n: Int) -> Int {
+    if n < 0 {
+        return 0
+    }
+    n * 2
+}
+
+fn main() {
+    println(value(chain(3)))
+    println(value(chain(-1)))
+    println(show(chain(5)))
+    println(show(chain(-2)))
+    println(early(5))
+    println(early(-3))
+}

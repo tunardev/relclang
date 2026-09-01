@@ -178,6 +178,7 @@ pub const Expr = union(enum) {
     while_expr: While,
     borrow: BorrowExpr,
     deref: Deref,
+    try_unwrap: TryUnwrap,
 
     pub fn typeOf(e: Expr) types.Type {
         return switch (e) {
@@ -199,6 +200,7 @@ pub const Expr = union(enum) {
             .while_expr => .void,
             .borrow => |b| b.ty,
             .deref => |d| d.ty,
+            .try_unwrap => |t| t.ty,
         };
     }
 
@@ -222,6 +224,7 @@ pub const Expr = union(enum) {
             .while_expr => |x| x.span,
             .borrow => |b| b.span,
             .deref => |d| d.span,
+            .try_unwrap => |t| t.span,
         };
     }
 };
@@ -233,9 +236,24 @@ pub const LetDecl = struct {
     span: Span,
 };
 
+pub const TryUnwrap = struct {
+    operand: *const Expr,
+    source_enum: u32,
+    ret_enum: u32,
+    ok_variant: u32,
+    err_variant: u32,
+    ty: types.Type,
+    span: Span,
+};
+
 pub const Assign = struct {
     target: Expr,
     value: Expr,
+    span: Span,
+};
+
+pub const Return = struct {
+    value: ?Expr,
     span: Span,
 };
 
@@ -243,6 +261,7 @@ pub const Stmt = union(enum) {
     expr: Expr,
     let: LetDecl,
     assign: Assign,
+    ret: Return,
 };
 
 pub const Local = struct {

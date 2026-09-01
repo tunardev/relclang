@@ -155,6 +155,7 @@ const Checker = struct {
             .match => |m| try c.checkMatch(m),
 
             .deref => |d| try c.read(d.operand.*),
+            .try_unwrap => |t| try c.consume(t.operand.*),
 
             .borrow => |b| {
                 try c.read(b.operand.*);
@@ -259,6 +260,9 @@ const Checker = struct {
                 }
 
                 try c.read(a.target);
+            },
+            .ret => |r| {
+                if (r.value) |v| try c.consume(v);
             },
             .let => |l| {
                 const saved = c.persist_borrows;

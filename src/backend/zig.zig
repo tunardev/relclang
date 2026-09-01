@@ -143,6 +143,16 @@ fn emitStmt(
             try emitExpr(w, program, f, lbl, a.value);
             try w.writeAll(";\n");
         },
+        .ret => |r| {
+            try indent(w, level);
+            if (r.value) |v| {
+                try w.writeAll("return ");
+                try emitExpr(w, program, f, lbl, v);
+                try w.writeAll(";\n");
+            } else {
+                try w.writeAll("return;\n");
+            }
+        },
         .let => |l| {
             try indent(w, level);
             try w.writeAll(if (f.locals[l.slot].assigned) "var " else "const ");
@@ -347,6 +357,51 @@ fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32,
             try w.writeAll("(");
             try emitExpr(w, program, f, lbl, d.operand.*);
             try w.writeAll(").*");
+        },
+
+        .try_unwrap => |t| {
+            const src = program.enums[t.source_enum];
+            const ret = program.enums[t.ret_enum];
+            const id = lbl.*;
+            lbl.* += 1;
+
+            try w.print("b{d}: {{\n", .{id});
+            try indent(w, 3);
+            try w.writeAll("switch (");
+            try emitExpr(w, program, f, lbl, t.operand.*);
+            try w.writeAll(") {\n");
+
+            try indent(w, 4);
+            try w.print(".v{d}_{s} => |__t| break :b{d} __t.f0,\n", .{
+                t.ok_variant,
+                src.variants[t.ok_variant].name,
+                id,
+            });
+
+            try indent(w, 4);
+            const err_payload = src.variants[t.err_variant].payload.len;
+            if (err_payload == 0) {
+                try w.print(".v{d}_{s} => return E{d}_{s}{{ .v{d}_{s} = {{}} }},\n", .{
+                    t.err_variant,
+                    src.variants[t.err_variant].name,
+                    t.ret_enum,
+                    ret.name,
+                    t.err_variant,
+                    ret.variants[t.err_variant].name,
+                });
+            } else {
+                try w.print(".v{d}_{s} => |__e| return E{d}_{s}{{ .v{d}_{s} = __e }},\n", .{
+                    t.err_variant,
+                    src.variants[t.err_variant].name,
+                    t.ret_enum,
+                    ret.name,
+                    t.err_variant,
+                    ret.variants[t.err_variant].name,
+                });
+            }
+
+            try indent(w, 3);
+            try w.writeAll("}\n    }");
         },
 
         .match => |m| try emitMatch(w, program, f, lbl, m),

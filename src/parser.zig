@@ -501,6 +501,20 @@ const Parser = struct {
     }
 
     fn parseStmt(p: *Parser) Error!?ast.Stmt {
+        if (p.peek() == .kw_return) {
+            const kw = p.advance();
+            var value: ?ast.Expr = null;
+            var end = kw.span;
+
+            if (p.peek() != .newline and p.peek() != .r_brace and p.peek() != .eof) {
+                const e = try p.parseExpr() orelse return null;
+                value = e;
+                end = e.spanOf();
+            }
+
+            return .{ .ret = .{ .value = value, .span = Span.merge(kw.span, end) } };
+        }
+
         if (p.peek() != .kw_let) {
             const e = try p.parseExpr() orelse return null;
 
@@ -730,6 +744,13 @@ const Parser = struct {
                         .field_span = field.span,
                         .span = merged,
                     } };
+                },
+                .question => {
+                    const q = p.advance();
+                    const inner = try p.arena.create(ast.Expr);
+                    inner.* = expr;
+                    const merged = Span.merge(expr.spanOf(), q.span);
+                    expr = .{ .try_expr = .{ .operand = inner, .span = merged } };
                 },
                 .l_bracket => {
                     _ = p.advance();

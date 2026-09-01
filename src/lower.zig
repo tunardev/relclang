@@ -90,6 +90,7 @@ const Fn = struct {
     symbols: *resolve.SymbolTable,
     diags: *diagnostics.Diagnostics,
     mono: *Mono,
+    ret_ty: Type,
     type_args: []const Type,
     expected: ?Type,
     bindings: std.ArrayList(Binding),
@@ -219,6 +220,7 @@ fn lowerFunction(
             .symbols = symbols,
             .diags = diags,
             .mono = mono,
+            .ret_ty = .void,
             .type_args = type_args,
             .expected = null,
             .bindings = .empty,
@@ -254,6 +256,8 @@ fn lowerFunction(
         }
 
         const param_count: u32 = @intCast(f.params.len);
+        ctx.ret_ty = info.ret;
+        ctx.expected = if (info.ret == .void) null else info.ret;
 
         const body = try lowerBlock(&ctx, f.body, info.ret != .void);
 
@@ -401,8 +405,12 @@ fn lowerBlock(f: *Fn, block: ast.Block, wants_value: bool) Error!tir.Block {
     var result: ?*const tir.Expr = null;
     const last = block.stmts.len;
 
+    const outer_expected = f.expected;
+    defer f.expected = outer_expected;
+
     for (block.stmts, 0..) |stmt, i| {
         const is_last = i + 1 == last;
+        f.expected = if (is_last and wants_value) outer_expected else null;
         const lowered = try lowerStmt(f, stmt, is_last and wants_value) orelse continue;
 
         if (is_last and wants_value and lowered == .expr) {
@@ -519,6 +527,38 @@ fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {
             return .{ .expr = try lowerExpr(f, e) };
         },
         .assign => |a| return lowerAssign(f, a),
+
+        .ret => |r| {
+            var value: ?tir.Expr = null;
+
+            if (r.value) |expr| {
+                const lowered = try lowerWithExpected(f, expr, f.ret_ty);
+                const got = lowered.typeOf();
+                if (!got.isInvalid() and !Type.eql(got, f.ret_ty)) {
+                    try f.diags.err(
+                        .missing_return,
+                        expr.spanOf(),
+                        "returned value has the wrong type",
+                        try f.diags.fmt("expected `{s}`, found `{s}`", .{
+                            try f.tyName(f.ret_ty),
+                            try f.tyName(got),
+                        }),
+                        null,
+                    );
+                }
+                value = lowered;
+            } else if (f.ret_ty != .void) {
+                try f.diags.err(
+                    .missing_return,
+                    r.span,
+                    "this function must return a value",
+                    try f.diags.fmt("expected `{s}`", .{try f.tyName(f.ret_ty)}),
+                    null,
+                );
+            }
+
+            return .{ .ret = .{ .value = value, .span = r.span } };
+        },
         .let => |l| {
             var annotation: ?Type = null;
             if (l.ty) |ty_expr| annotation = try f.subst(try resolveLocalType(f, ty_expr));
@@ -906,6 +946,8 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
 
         .call => |c| return lowerCall(f, c),
 
+        .try_expr => |t| return lowerTry(f, t),
+
         .match => |m| return lowerMatch(f, m),
 
         .boolean => |b| return .{ .bool_const = .{ .value = b.value, .ty = .bool, .span = b.span } },
@@ -1137,6 +1179,7 @@ fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
     defer f.gpa.free(covered);
     @memset(covered, false);
 
+    const arm_expected = f.expected;
     var has_wildcard = false;
     var saw_invalid = false;
     var arms: std.ArrayList(tir.MatchArm) = .empty;
@@ -1211,7 +1254,7 @@ fn lowerMatch(f: *Fn, m: ast.Match) Error!tir.Expr {
             },
         }
 
-        const body = try lowerExpr(f, arm.body);
+        const body = try lowerWithExpected(f, arm.body, arm_expected);
         const body_ty = body.typeOf();
 
         if (result_ty) |want| {
@@ -1383,6 +1426,111 @@ fn lowerWithExpected(f: *Fn, expr: ast.Expr, expected: ?Type) Error!tir.Expr {
     f.expected = expected;
     defer f.expected = saved;
     return lowerExpr(f, expr);
+}
+
+fn lowerTry(f: *Fn, t: ast.Try) Error!tir.Expr {
+    const operand = try lowerExpr(f, t.operand.*);
+    const src = operand.typeOf();
+
+    const bad: tir.Expr = .{ .try_unwrap = .{
+        .operand = try f.box(operand),
+        .source_enum = 0,
+        .ret_enum = 0,
+        .ok_variant = 0,
+        .err_variant = 1,
+        .ty = .invalid,
+        .span = t.span,
+    } };
+
+    if (src.isInvalid()) return bad;
+
+    if (src != .enumeration or f.ret_ty != .enumeration) {
+        try f.diags.err(
+            .bad_pattern,
+            t.span,
+            "`?` needs an enum value and an enum return type",
+            try f.diags.fmt("this is `{s}`", .{try f.tyName(src)}),
+            "`?` propagates the second variant and unwraps the first",
+        );
+        return bad;
+    }
+
+    const src_tpl = templateOf(f, src.enumeration);
+    const ret_tpl = templateOf(f, f.ret_ty.enumeration);
+
+    if (src_tpl == null or ret_tpl == null or src_tpl.? != ret_tpl.?) {
+        try f.diags.err(
+            .bad_pattern,
+            t.span,
+            "`?` needs the same enum as the return type",
+            try f.diags.fmt("found `{s}`, function returns `{s}`", .{
+                try f.tyName(src),
+                try f.tyName(f.ret_ty),
+            }),
+            null,
+        );
+        return bad;
+    }
+
+    const src_def = f.symbols.enums.items[src.enumeration];
+    const ret_def = f.symbols.enums.items[f.ret_ty.enumeration];
+
+    if (src_def.variants.len != 2 or src_def.variants[0].payload.len != 1) {
+        try f.diags.err(
+            .bad_pattern,
+            t.span,
+            "`?` needs an enum with two variants where the first carries one value",
+            try f.diags.fmt("`{s}` does not have that shape", .{src_def.name}),
+            null,
+        );
+        return bad;
+    }
+
+    const src_err = src_def.variants[1].payload;
+    const ret_err = ret_def.variants[1].payload;
+
+    if (src_err.len != ret_err.len) {
+        try f.diags.err(
+            .type_mismatch,
+            t.span,
+            "the error variants do not match",
+            "cannot propagate",
+            null,
+        );
+        return bad;
+    }
+
+    for (src_err, ret_err) |a, b| {
+        if (!Type.eql(a, b)) {
+            try f.diags.err(
+                .type_mismatch,
+                t.span,
+                "the error variants carry different types",
+                try f.diags.fmt("`{s}` cannot propagate into `{s}`", .{ src_def.name, ret_def.name }),
+                null,
+            );
+            return bad;
+        }
+    }
+
+    return .{ .try_unwrap = .{
+        .operand = try f.box(operand),
+        .source_enum = src.enumeration,
+        .ret_enum = f.ret_ty.enumeration,
+        .ok_variant = 0,
+        .err_variant = 1,
+        .ty = src_def.variants[0].payload[0],
+        .span = t.span,
+    } };
+}
+
+fn templateOf(f: *Fn, enum_index: u32) ?u32 {
+    for (f.symbols.instances.items) |inst| {
+        const tpl = f.symbols.templates.items[inst.template];
+        if (tpl.enum_def == null) continue;
+        if (inst.index == enum_index) return inst.template;
+    }
+    return null;
 }
 
 fn lowerCall(f: *Fn, c: ast.Call) Error!tir.Expr {
