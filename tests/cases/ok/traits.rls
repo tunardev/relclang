@@ -1,0 +1,49 @@
+trait Show {
+    fn show(self) -> Str
+}
+
+trait Score {
+    fn score(self) -> Int
+}
+
+struct User {
+    name: Str
+    age: Int
+}
+
+struct Item {
+    label: Str
+}
+
+impl Show for User {
+    fn show(self) -> Str {
+        self.name
+    }
+}
+
+impl Score for User {
+    fn score(self) -> Int {
+        self.age
+    }
+}
+
+impl Show for Item {
+    fn show(self) -> Str {
+        self.label
+    }
+}
+
+fn announce<T: Show>(x: T) -> Str {
+    x.show()
+}
+
+fn main() {
+    let u = User { name: "ada", age: 36 }
+    let i = Item { label: "widget" }
+
+    println(u.show())
+    println(u.score())
+    println(i.show())
+    println(announce(u))
+    println(announce(i))
+}

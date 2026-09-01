@@ -107,6 +107,7 @@ pub const Expr = union(enum) {
     while_expr: While,
     borrow: Borrow,
     try_expr: Try,
+    method_call: MethodCall,
 
     pub fn spanOf(e: Expr) Span {
         return switch (e) {
@@ -126,6 +127,7 @@ pub const Expr = union(enum) {
             .while_expr => |x| x.span,
             .borrow => |b| b.span,
             .try_expr => |t| t.span,
+            .method_call => |m| m.span,
         };
     }
 };
@@ -178,6 +180,43 @@ pub const Block = struct {
 
 pub const TypeParam = struct {
     name: []const u8,
+    span: Span,
+    bounds: []const Bound,
+};
+
+pub const Bound = struct {
+    name: []const u8,
+    span: Span,
+};
+
+pub const MethodSig = struct {
+    name: []const u8,
+    name_span: Span,
+    params: []const Param,
+    ret_ty: ?TypeExpr,
+    span: Span,
+};
+
+pub const TraitDecl = struct {
+    name: []const u8,
+    name_span: Span,
+    methods: []const MethodSig,
+    span: Span,
+};
+
+pub const ImplDecl = struct {
+    trait_name: []const u8,
+    trait_span: Span,
+    target: TypeExpr,
+    methods: []const Fn,
+    span: Span,
+};
+
+pub const MethodCall = struct {
+    receiver: *const Expr,
+    name: []const u8,
+    name_span: Span,
+    args: []const Expr,
     span: Span,
 };
 
@@ -319,6 +358,7 @@ pub const Fn = struct {
     name: []const u8,
     name_span: Span,
     type_params: []const TypeParam,
+    has_self: bool = false,
     params: []const Param,
     ret_ty: ?TypeExpr,
     body: Block,
@@ -329,4 +369,6 @@ pub const Program = struct {
     fns: []const Fn,
     structs: []const StructDecl,
     enums: []const EnumDecl,
+    traits: []const TraitDecl,
+    impls: []const ImplDecl,
 };

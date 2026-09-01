@@ -221,6 +221,10 @@ fn keywordOf(name: []const u8) ?Kind {
     if (std.mem.eql(u8, name, "or")) return .kw_or;
     if (std.mem.eql(u8, name, "not")) return .kw_not;
     if (std.mem.eql(u8, name, "return")) return .kw_return;
+    if (std.mem.eql(u8, name, "trait")) return .kw_trait;
+    if (std.mem.eql(u8, name, "impl")) return .kw_impl;
+    if (std.mem.eql(u8, name, "for")) return .kw_for;
+    if (std.mem.eql(u8, name, "self")) return .kw_self;
     return null;
 }
 

@@ -157,7 +157,7 @@ pub fn run(
     symbols: *resolve.SymbolTable,
     diags: *diagnostics.Diagnostics,
 ) Error!tir.Program {
-    const ast_to_tir = try arena.alloc(?usize, program.fns.len);
+    const ast_to_tir = try arena.alloc(?usize, symbols.all_fns.len);
     @memset(ast_to_tir, null);
 
     var mono: Mono = .{
@@ -174,13 +174,13 @@ pub fn run(
     defer mono.instances.deinit(gpa);
     defer mono.pending.deinit(gpa);
 
-    for (program.fns, 0..) |_, index| {
+    for (symbols.all_fns, 0..) |_, index| {
         if (symbols.signature(index).isGeneric()) continue;
         ast_to_tir[index] = mono.functions.items.len;
         try mono.functions.append(arena, undefined);
     }
 
-    for (program.fns, 0..) |_, index| {
+    for (symbols.all_fns, 0..) |_, index| {
         if (ast_to_tir[index]) |tir_index| {
             const lowered = try lowerFunction(&mono, index, &.{}, tir_index);
             mono.functions.items[tir_index] = lowered;
@@ -209,11 +209,10 @@ fn lowerFunction(
     const gpa = mono.gpa;
     const symbols = mono.symbols;
     const diags = mono.diags;
-    const program = mono.program;
     _ = tir_index;
 
     {
-        const f = program.fns[index];
+        const f = symbols.all_fns[index];
         var ctx: Fn = .{
             .arena = arena,
             .gpa = gpa,
@@ -241,6 +240,13 @@ fn lowerFunction(
             .type_param_count = 0,
         };
 
+        var slot_offset: usize = 0;
+        if (f.has_self) {
+            _ = try ctx.declareMut("self", info.params[0], false);
+            ctx.locals.items[0].used = true;
+            slot_offset = 1;
+        }
+
         for (f.params, 0..) |param, i| {
             if (ctx.declaredAtDepth(param.name)) {
                 try diags.err(
@@ -251,11 +257,11 @@ fn lowerFunction(
                     null,
                 );
             }
-            _ = try ctx.declareMut(param.name, info.params[i], false);
-            ctx.locals.items[i].used = true;
+            _ = try ctx.declareMut(param.name, info.params[i + slot_offset], false);
+            ctx.locals.items[i + slot_offset].used = true;
         }
 
-        const param_count: u32 = @intCast(f.params.len);
+        const param_count: u32 = @intCast(f.params.len + slot_offset);
         ctx.ret_ty = info.ret;
         ctx.expected = if (info.ret == .void) null else info.ret;
 
@@ -948,6 +954,8 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
 
         .try_expr => |t| return lowerTry(f, t),
 
+        .method_call => |m| return lowerMethodCall(f, m),
+
         .match => |m| return lowerMatch(f, m),
 
         .boolean => |b| return .{ .bool_const = .{ .value = b.value, .ty = .bool, .span = b.span } },
@@ -1428,6 +1436,94 @@ fn lowerWithExpected(f: *Fn, expr: ast.Expr, expected: ?Type) Error!tir.Expr {
     return lowerExpr(f, expr);
 }
 
+fn lowerMethodCall(f: *Fn, m: ast.MethodCall) Error!tir.Expr {
+    const receiver = try lowerExpr(f, m.receiver.*);
+    var target = receiver.typeOf();
+    while (target == .ref) target = target.ref.target.*;
+
+    const bad: tir.Expr = .{ .call_builtin = .{
+        .builtin = .print_line,
+        .args = &.{},
+        .ty = .invalid,
+        .span = m.span,
+    } };
+
+    if (target.isInvalid()) return bad;
+
+    const found = f.symbols.findImpl(target, m.name) orelse {
+        try f.diags.err(
+            .unknown_method,
+            m.name_span,
+            try f.diags.fmt("no method `{s}` on `{s}`", .{ m.name, try f.tyName(target) }),
+            "no trait implementation provides it",
+            "implement a trait for this type, or check the name",
+        );
+        for (m.args) |arg| _ = try lowerExpr(f, arg);
+        return bad;
+    };
+
+    const info = f.symbols.signature(found.fn_index);
+
+    var args: std.ArrayList(tir.Expr) = .empty;
+
+    const self_arg: tir.Expr = if (receiver.typeOf() == .ref) receiver else blk: {
+        const ptr = try f.arena.create(Type);
+        ptr.* = target;
+        break :blk .{ .borrow = .{
+            .mutable = false,
+            .operand = try f.box(receiver),
+            .ty = .{ .ref = .{ .mutable = false, .target = ptr } },
+            .span = m.span,
+        } };
+    };
+    try args.append(f.arena, self_arg);
+
+    for (m.args, 0..) |arg, i| {
+        const want: ?Type = if (i + 1 < info.params.len) info.params[i + 1] else null;
+        try args.append(f.arena, try lowerWithExpected(f, arg, want));
+    }
+
+    const lowered = try args.toOwnedSlice(f.arena);
+
+    if (lowered.len != info.params.len) {
+        try f.diags.err(
+            .wrong_arg_count,
+            m.span,
+            try f.diags.fmt("`{s}` takes {d} {s}", .{
+                m.name,
+                info.params.len - 1,
+                if (info.params.len == 2) "argument" else "arguments",
+            }),
+            try f.diags.fmt("expected {d}, found {d}", .{ info.params.len - 1, lowered.len - 1 }),
+            null,
+        );
+        return bad;
+    }
+
+    for (lowered[1..], info.params[1..]) |arg, want| {
+        const got = arg.typeOf();
+        if (!got.isInvalid() and !Type.eql(got, want)) {
+            try f.diags.err(
+                .type_mismatch,
+                arg.spanOf(),
+                "argument type mismatch",
+                try f.diags.fmt("expected `{s}`, found `{s}`", .{ try f.tyName(want), try f.tyName(got) }),
+                null,
+            );
+        }
+    }
+
+    const tir_index = f.mono.ast_to_tir[found.fn_index] orelse
+        try f.mono.instantiate(found.fn_index, &.{});
+
+    return .{ .call_function = .{
+        .target = tir_index,
+        .args = lowered,
+        .ty = info.ret,
+        .span = m.span,
+    } };
+}
+
 fn lowerTry(f: *Fn, t: ast.Try) Error!tir.Expr {
     const operand = try lowerExpr(f, t.operand.*);
     const src = operand.typeOf();
@@ -1716,6 +1812,28 @@ fn lowerGenericCall(
             );
             return .{ .call_builtin = .{ .builtin = .print_line, .args = args, .ty = .invalid, .span = c.span } };
         };
+    }
+
+    const bounds = f.symbols.bounds[target];
+    for (resolved, 0..) |arg, i| {
+        if (i >= bounds.len) break;
+        const trait_index = bounds[i];
+        if (trait_index == std.math.maxInt(u32)) continue;
+        if (f.symbols.implements(arg, trait_index)) continue;
+
+        try f.diags.err(
+            .missing_impl,
+            c.span,
+            try f.diags.fmt("`{s}` does not implement `{s}`", .{
+                try f.tyName(arg),
+                f.symbols.traits[trait_index].name,
+            }),
+            "the bound is not satisfied",
+            try f.diags.fmt("add `impl {s} for {s}`", .{
+                f.symbols.traits[trait_index].name,
+                try f.tyName(arg),
+            }),
+        );
     }
 
     const tir_index = try f.mono.instantiate(target, resolved);

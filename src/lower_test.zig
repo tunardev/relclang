@@ -669,3 +669,80 @@ test "generics unify through references" {
     defer l.deinit();
     try testing.expect(!l.diags.hasErrors());
 }
+
+test "a trait method resolves through the impl" {
+    var l = try lowerText(testing.allocator,
+        "trait Show {\n    fn show(self) -> Str\n}\n" ++
+        "struct U {\n    n: Str\n}\n" ++
+        "impl Show for U {\n    fn show(self) -> Str {\n        self.n\n    }\n}\n" ++
+        "fn main() {\n    let u = U { n: \"a\" }\n    println(u.show())\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "an unknown method reports E0034" {
+    var l = try lowerText(testing.allocator,
+        "struct P {\n    x: Int\n}\n" ++
+        "fn main() {\n    let p = P { x: 1 }\n    println(p.nope())\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.unknown_method));
+}
+
+test "an unsatisfied bound reports E0035" {
+    var l = try lowerText(testing.allocator,
+        "trait Show {\n    fn show(self) -> Str\n}\n" ++
+        "struct A {\n    v: Int\n}\n" ++
+        "struct B {\n    v: Int\n}\n" ++
+        "impl Show for A {\n    fn show(self) -> Str {\n        \"a\"\n    }\n}\n" ++
+        "fn go<T: Show>(x: T) -> Str {\n    x.show()\n}\n" ++
+        "fn main() {\n    let b = B { v: 1 }\n    println(go(b))\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.missing_impl));
+}
+
+test "a satisfied bound lowers cleanly" {
+    var l = try lowerText(testing.allocator,
+        "trait Show {\n    fn show(self) -> Str\n}\n" ++
+        "struct A {\n    v: Int\n}\n" ++
+        "impl Show for A {\n    fn show(self) -> Str {\n        \"a\"\n    }\n}\n" ++
+        "fn go<T: Show>(x: T) -> Str {\n    x.show()\n}\n" ++
+        "fn main() {\n    let a = A { v: 1 }\n    println(go(a))\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "the question mark unwraps and propagates" {
+    var l = try lowerText(testing.allocator,
+        "enum Result<T, E> {\n    Ok(T)\n    Err(E)\n}\n" ++
+        "fn a() -> Result<Int, Str> {\n    Ok(1)\n}\n" ++
+        "fn b() -> Result<Int, Str> {\n    let v = a()?\n    Ok(v + 1)\n}\n" ++
+        "fn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "the question mark rejects mismatched error types" {
+    var l = try lowerText(testing.allocator,
+        "enum Result<T, E> {\n    Ok(T)\n    Err(E)\n}\n" ++
+        "fn a() -> Result<Int, Str> {\n    Ok(1)\n}\n" ++
+        "fn b() -> Result<Int, Int> {\n    let v = a()?\n    Ok(v)\n}\n" ++
+        "fn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.type_mismatch));
+}
+
+test "an early return type checks" {
+    var l = try lowerText(testing.allocator,
+        "fn f(n: Int) -> Int {\n    if n < 0 {\n        return 0\n    }\n    n\n}\n" ++
+        "fn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(!l.diags.hasErrors());
+}
+
+test "a wrongly typed return reports E0016" {
+    var l = try lowerText(testing.allocator,
+        "fn f() -> Int {\n    return \"no\"\n}\n" ++
+        "fn main() {\n}\n");
+    defer l.deinit();
+    try testing.expect(l.has(.missing_return));
+}

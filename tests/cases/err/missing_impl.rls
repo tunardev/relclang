@@ -1,0 +1,26 @@
+trait Show {
+    fn show(self) -> Str
+}
+
+struct Known {
+    v: Int
+}
+
+struct Unknown {
+    v: Int
+}
+
+impl Show for Known {
+    fn show(self) -> Str {
+        "known"
+    }
+}
+
+fn announce<T: Show>(x: T) -> Str {
+    x.show()
+}
+
+fn main() {
+    let u = Unknown { v: 1 }
+    println(announce(u))
+}

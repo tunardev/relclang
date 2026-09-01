@@ -1,0 +1,21 @@
+trait Show {
+    fn show(self) -> Str
+}
+
+struct User {
+    name: Str
+}
+
+impl Show for User {
+    fn show(self) -> Str {
+        self.name
+    }
+}
+
+fn announce<T: Show>(x: T) -> Str {
+    x.show()
+}
+
+fn main() {
+    println(announce(User { name: "ada" }))
+}

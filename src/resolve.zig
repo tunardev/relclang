@@ -65,6 +65,24 @@ pub const Template = struct {
     enum_def: ?types.EnumDef,
 };
 
+pub const TraitInfo = struct {
+    name: []const u8,
+    methods: []const []const u8,
+
+    pub fn hasMethod(t: TraitInfo, name: []const u8) bool {
+        for (t.methods) |m| {
+            if (std.mem.eql(u8, m, name)) return true;
+        }
+        return false;
+    }
+};
+
+pub const ImplInfo = struct {
+    trait_index: u32,
+    target: types.Type,
+    methods: []const usize,
+};
+
 pub const TypeInstance = struct {
     template: u32,
     args: []const types.Type,
@@ -84,6 +102,11 @@ pub const SymbolTable = struct {
     templates: std.ArrayList(Template),
     template_map: std.StringHashMapUnmanaged(u32),
     instances: std.ArrayList(TypeInstance),
+    traits: []const TraitInfo,
+    trait_map: std.StringHashMapUnmanaged(u32),
+    impls: []const ImplInfo,
+    all_fns: []const ast.Fn,
+    bounds: []const []const u32,
 
     pub fn lookup(t: *const SymbolTable, name: []const u8) ?Symbol {
         return t.map.get(name);
@@ -170,8 +193,36 @@ pub const SymbolTable = struct {
         return types.nameOf(arena, t.registry(), ty);
     }
 
+    pub fn traitIndex(t: *const SymbolTable, name: []const u8) ?u32 {
+        return t.trait_map.get(name);
+    }
+
+    pub fn findImpl(t: *const SymbolTable, target: types.Type, method: []const u8) ?struct {
+        impl: ImplInfo,
+        fn_index: usize,
+    } {
+        for (t.impls) |impl| {
+            if (!types.Type.eql(impl.target, target)) continue;
+            const trait = t.traits[impl.trait_index];
+            for (trait.methods, 0..) |name, i| {
+                if (!std.mem.eql(u8, name, method)) continue;
+                if (i >= impl.methods.len) continue;
+                return .{ .impl = impl, .fn_index = impl.methods[i] };
+            }
+        }
+        return null;
+    }
+
+    pub fn implements(t: *const SymbolTable, target: types.Type, trait_index: u32) bool {
+        for (t.impls) |impl| {
+            if (impl.trait_index == trait_index and types.Type.eql(impl.target, target)) return true;
+        }
+        return false;
+    }
+
     pub fn deinit(t: *SymbolTable) void {
         t.map.deinit(t.gpa);
+        t.trait_map.deinit(t.gpa);
         t.struct_map.deinit(t.gpa);
         t.enum_map.deinit(t.gpa);
         t.template_map.deinit(t.gpa);
@@ -330,8 +381,35 @@ pub fn run(
         .templates = .empty,
         .template_map = .empty,
         .instances = .empty,
+        .traits = &.{},
+        .trait_map = .empty,
+        .impls = &.{},
+        .all_fns = &.{},
+        .bounds = &.{},
     };
     errdefer table.deinit();
+
+    {
+        var trait_list: std.ArrayList(TraitInfo) = .empty;
+        for (program.traits, 0..) |decl, i| {
+            if (table.trait_map.get(decl.name) != null) {
+                try diags.err(
+                    .duplicate_function,
+                    decl.name_span,
+                    try diags.fmt("`{s}` is already defined", .{decl.name}),
+                    "duplicate trait",
+                    null,
+                );
+                continue;
+            }
+            try table.trait_map.put(gpa, decl.name, @intCast(i));
+
+            const names = try arena.alloc([]const u8, decl.methods.len);
+            for (decl.methods, 0..) |m, j| names[j] = m.name;
+            try trait_list.append(arena, .{ .name = decl.name, .methods = names });
+        }
+        table.traits = try trait_list.toOwnedSlice(arena);
+    }
 
     for (program.enums) |decl| {
         if (decl.type_params.len == 0) continue;
@@ -495,13 +573,120 @@ pub fn run(
         try table.map.put(gpa, field.name, .{ .builtin = @field(Builtin, field.name) });
     }
 
-    var infos: std.ArrayList(FnInfo) = .empty;
+    var combined: std.ArrayList(ast.Fn) = .empty;
+    try combined.appendSlice(arena, program.fns);
 
-    for (program.fns) |f| {
+    var impl_targets: std.ArrayList(types.Type) = .empty;
+    var impl_list: std.ArrayList(ImplInfo) = .empty;
+
+    for (program.impls, 0..) |decl, impl_i| {
+        const target = try resolveType(arena, &table, decl.target, diags);
+
+        const target_label = switch (decl.target) {
+            .named => |n| n.name,
+            else => try std.fmt.allocPrint(arena, "impl{d}", .{impl_i}),
+        };
+
+        const trait_index = table.trait_map.get(decl.trait_name) orelse {
+            try diags.err(
+                .unknown_trait,
+                decl.trait_span,
+                try diags.fmt("unknown trait `{s}`", .{decl.trait_name}),
+                "not defined anywhere",
+                null,
+            );
+            continue;
+        };
+
+        const trait = table.traits[trait_index];
+        const slots = try arena.alloc(usize, trait.methods.len);
+        @memset(slots, std.math.maxInt(usize));
+
+        for (decl.methods) |m| {
+            var matched = false;
+            for (trait.methods, 0..) |name, i| {
+                if (!std.mem.eql(u8, name, m.name)) continue;
+                slots[i] = combined.items.len;
+                matched = true;
+                break;
+            }
+
+            if (!matched) {
+                try diags.err(
+                    .unknown_method,
+                    m.name_span,
+                    try diags.fmt("`{s}` is not a method of `{s}`", .{ m.name, trait.name }),
+                    "not declared by the trait",
+                    null,
+                );
+            }
+
+            var renamed = m;
+            renamed.name = try std.fmt.allocPrint(arena, "{s}_{s}", .{ target_label, m.name });
+            try combined.append(arena, renamed);
+            try impl_targets.append(arena, target);
+        }
+
+        for (trait.methods, 0..) |name, i| {
+            if (slots[i] != std.math.maxInt(usize)) continue;
+            try diags.err(
+                .missing_impl,
+                decl.span,
+                try diags.fmt("missing method `{s}`", .{name}),
+                try diags.fmt("`{s}` requires it", .{trait.name}),
+                null,
+            );
+        }
+
+        try impl_list.append(arena, .{
+            .trait_index = trait_index,
+            .target = target,
+            .methods = slots,
+        });
+    }
+
+    table.impls = try impl_list.toOwnedSlice(arena);
+    table.all_fns = try combined.toOwnedSlice(arena);
+
+    var infos: std.ArrayList(FnInfo) = .empty;
+    var bound_list: std.ArrayList([]const u32) = .empty;
+
+    for (table.all_fns, 0..) |f, fi| {
         var params: std.ArrayList(types.Type) = .empty;
+
+        if (f.has_self) {
+            const self_index = fi - program.fns.len;
+            const target = if (self_index < impl_targets.items.len)
+                impl_targets.items[self_index]
+            else
+                types.Type.invalid;
+            const ptr = try arena.create(types.Type);
+            ptr.* = target;
+            try params.append(arena, .{ .ref = .{ .mutable = false, .target = ptr } });
+        }
+
         for (f.params) |param| {
             try params.append(arena, try resolveTypeIn(arena, &table, param.ty, f.type_params, diags));
         }
+
+        const tp_bounds = try arena.alloc(u32, f.type_params.len);
+        for (f.type_params, 0..) |tp, ti| {
+            tp_bounds[ti] = std.math.maxInt(u32);
+            for (tp.bounds) |b| {
+                if (table.trait_map.get(b.name)) |ix| {
+                    tp_bounds[ti] = ix;
+                } else {
+                    try diags.err(
+                        .unknown_trait,
+                        b.span,
+                        try diags.fmt("unknown trait `{s}`", .{b.name}),
+                        "not defined anywhere",
+                        null,
+                    );
+                }
+            }
+        }
+        try bound_list.append(arena, tp_bounds);
 
         const ret: types.Type = if (f.ret_ty) |ty_expr|
             try resolveTypeIn(arena, &table, ty_expr, f.type_params, diags)
@@ -517,6 +702,7 @@ pub fn run(
     }
 
     table.fns = try infos.toOwnedSlice(arena);
+    table.bounds = try bound_list.toOwnedSlice(arena);
 
     for (program.fns, 0..) |f, index| {
         if (table.map.get(f.name)) |existing| {

@@ -1,0 +1,18 @@
+error[E0035]: `Unknown` does not implement `Show`
+
+   --> missing_impl.rls:25:13
+    |
+ 25 |     println(announce(u))
+    |             ^^^^^^^^^^^ the bound is not satisfied
+    |
+help: add `impl Show for Unknown`
+
+error[E0034]: no method `show` on `Unknown`
+
+   --> missing_impl.rls:20:7
+    |
+ 20 |     x.show()
+    |       ^^^^ no trait implementation provides it
+    |
+help: implement a trait for this type, or check the name
+

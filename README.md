@@ -59,10 +59,39 @@ Borrow it instead with `&` or `&mut`:
 
 A value can have many shared borrows or one mutable borrow, never both.
 
-The last line of a function body is its return value. There is no
-`return` keyword yet. Arrays have a fixed length that is part of their
-type, written `[Int; 3]`. Slices do not exist yet. Every `match` must
-cover all variants, or end with a `_` arm.
+Functions, structs and enums can be generic, and traits describe what a
+type can do:
+
+    trait Show {
+        fn show(self) -> Str
+    }
+
+    impl Show for User {
+        fn show(self) -> Str {
+            self.name
+        }
+    }
+
+    fn announce<T: Show>(x: T) -> Str {
+        x.show()
+    }
+
+Generic code is compiled separately for each type it is used with, so
+calls are direct. Type arguments are worked out from the arguments you
+pass; there is no way to write them at a call site yet.
+
+`?` unwraps the first variant of an enum and returns the second one
+from the enclosing function, which is how errors travel:
+
+    fn quarter(n: Int) -> Result<Int, Str> {
+        let half = halve(n)?
+        halve(half)
+    }
+
+The last line of a function body is its return value, and `return` exits
+early. Arrays have a fixed length that is part of their type, written
+`[Int; 3]`. Slices do not exist yet. Every `match` must cover all
+variants, or end with a `_` arm.
 
 There is one integer type, `Int`, which is 64 bits and signed. Division
 truncates toward zero and dividing by zero stops the program. Bindings

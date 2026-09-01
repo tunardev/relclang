@@ -46,6 +46,8 @@ const Parser = struct {
         var fns: std.ArrayList(ast.Fn) = .empty;
         var structs: std.ArrayList(ast.StructDecl) = .empty;
         var enums: std.ArrayList(ast.EnumDecl) = .empty;
+        var traits: std.ArrayList(ast.TraitDecl) = .empty;
+        var impls: std.ArrayList(ast.ImplDecl) = .empty;
 
         while (true) {
             p.skipNewlines();
@@ -55,12 +57,14 @@ const Parser = struct {
                 .kw_fn => if (try p.parseFn()) |f| try fns.append(p.arena, f),
                 .kw_struct => if (try p.parseStruct()) |d| try structs.append(p.arena, d),
                 .kw_enum => if (try p.parseEnum()) |d| try enums.append(p.arena, d),
+                .kw_trait => if (try p.parseTrait()) |d| try traits.append(p.arena, d),
+                .kw_impl => if (try p.parseImpl()) |d| try impls.append(p.arena, d),
                 else => {
                     try p.diags.err(
                         .unexpected_token,
                         p.current().span,
                         "expected a top level definition",
-                        "only `fn`, `struct` and `enum` are allowed here",
+                        "only `fn`, `struct`, `enum`, `trait` and `impl` are allowed here",
                         null,
                     );
                     p.recoverToTopLevel();
@@ -72,11 +76,18 @@ const Parser = struct {
             .fns = try fns.toOwnedSlice(p.arena),
             .structs = try structs.toOwnedSlice(p.arena),
             .enums = try enums.toOwnedSlice(p.arena),
+            .traits = try traits.toOwnedSlice(p.arena),
+            .impls = try impls.toOwnedSlice(p.arena),
         };
     }
 
     fn recoverToTopLevel(p: *Parser) void {
-        while (p.peek() != .eof and p.peek() != .kw_fn and p.peek() != .kw_struct and p.peek() != .kw_enum) p.pos += 1;
+        while (p.peek() != .eof and
+            p.peek() != .kw_fn and
+            p.peek() != .kw_struct and
+            p.peek() != .kw_enum and
+            p.peek() != .kw_trait and
+            p.peek() != .kw_impl) p.pos += 1;
     }
 
     fn parseStruct(p: *Parser) Error!?ast.StructDecl {
@@ -135,6 +146,173 @@ const Parser = struct {
             .name_span = name_tok.span,
             .type_params = type_params,
             .fields = try fields.toOwnedSlice(p.arena),
+            .span = Span.merge(kw.span, close.span),
+        };
+    }
+
+    fn parseParamList(p: *Parser) Error!?struct { params: []const ast.Param, has_self: bool } {
+        _ = try p.expect(.l_paren, "expected `(`", null) orelse return null;
+
+        var params: std.ArrayList(ast.Param) = .empty;
+        var has_self = false;
+
+        if (p.peek() != .r_paren) {
+            if (p.peek() == .kw_self) {
+                _ = p.advance();
+                has_self = true;
+                if (p.peek() == .comma) _ = p.advance();
+            }
+
+            while (p.peek() != .r_paren) {
+                const pname = try p.expect(.ident, "expected a parameter name", null) orelse return null;
+                _ = try p.expect(.colon, "expected `:`", "every parameter needs a type") orelse return null;
+                const pty = try p.parseType() orelse return null;
+                try params.append(p.arena, .{
+                    .name = pname.value,
+                    .name_span = pname.span,
+                    .ty = pty,
+                });
+                if (p.peek() != .comma) break;
+                _ = p.advance();
+            }
+        }
+
+        _ = try p.expect(.r_paren, "expected `)`", null) orelse return null;
+
+        return .{ .params = try params.toOwnedSlice(p.arena), .has_self = has_self };
+    }
+
+    fn parseTrait(p: *Parser) Error!?ast.TraitDecl {
+        const kw = p.advance();
+
+        const name_tok = try p.expect(.ident, "expected a trait name", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        p.skipNewlines();
+        _ = try p.expect(.l_brace, "expected `{`", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        var methods: std.ArrayList(ast.MethodSig) = .empty;
+
+        while (true) {
+            p.skipNewlines();
+            if (p.peek() == .r_brace or p.peek() == .eof) break;
+
+            const before = p.pos;
+
+            if (p.peek() != .kw_fn) {
+                try p.diags.err(
+                    .unexpected_token,
+                    p.current().span,
+                    "expected a method signature",
+                    "a trait body holds `fn` signatures",
+                    null,
+                );
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            }
+
+            const fn_kw = p.advance();
+            const mname = try p.expect(.ident, "expected a method name", null) orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+
+            const list = try p.parseParamList() orelse {
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            };
+
+            var ret_ty: ?ast.TypeExpr = null;
+            if (p.peek() == .arrow) {
+                _ = p.advance();
+                ret_ty = try p.parseType();
+            }
+
+            try methods.append(p.arena, .{
+                .name = mname.value,
+                .name_span = mname.span,
+                .params = list.params,
+                .ret_ty = ret_ty,
+                .span = Span.merge(fn_kw.span, mname.span),
+            });
+
+            if (p.pos == before) p.pos += 1;
+        }
+
+        const close = try p.expect(.r_brace, "expected `}`", "the trait body is never closed") orelse p.current();
+
+        return .{
+            .name = name_tok.value,
+            .name_span = name_tok.span,
+            .methods = try methods.toOwnedSlice(p.arena),
+            .span = Span.merge(kw.span, close.span),
+        };
+    }
+
+    fn parseImpl(p: *Parser) Error!?ast.ImplDecl {
+        const kw = p.advance();
+
+        const trait_tok = try p.expect(.ident, "expected a trait name", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        _ = try p.expect(.kw_for, "expected `for`", "write `impl Trait for Type`") orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        const target = try p.parseType() orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        p.skipNewlines();
+        _ = try p.expect(.l_brace, "expected `{`", null) orelse {
+            p.recoverToTopLevel();
+            return null;
+        };
+
+        var methods: std.ArrayList(ast.Fn) = .empty;
+
+        while (true) {
+            p.skipNewlines();
+            if (p.peek() == .r_brace or p.peek() == .eof) break;
+
+            const before = p.pos;
+
+            if (p.peek() != .kw_fn) {
+                try p.diags.err(
+                    .unexpected_token,
+                    p.current().span,
+                    "expected a method",
+                    "an impl body holds `fn` definitions",
+                    null,
+                );
+                p.recoverInBlock();
+                if (p.pos == before) p.pos += 1;
+                continue;
+            }
+
+            if (try p.parseFn()) |m| try methods.append(p.arena, m);
+            if (p.pos == before) p.pos += 1;
+        }
+
+        const close = try p.expect(.r_brace, "expected `}`", "the impl body is never closed") orelse p.current();
+
+        return .{
+            .trait_name = trait_tok.value,
+            .trait_span = trait_tok.span,
+            .target = target,
+            .methods = try methods.toOwnedSlice(p.arena),
             .span = Span.merge(kw.span, close.span),
         };
     }
@@ -368,7 +546,23 @@ const Parser = struct {
         _ = p.advance();
         while (true) {
             const name = try p.expect(.ident, "expected a type parameter name", null) orelse return null;
-            try list.append(p.arena, .{ .name = name.value, .span = name.span });
+
+            var bounds: std.ArrayList(ast.Bound) = .empty;
+            if (p.peek() == .colon) {
+                _ = p.advance();
+                while (true) {
+                    const b = try p.expect(.ident, "expected a trait name", null) orelse return null;
+                    try bounds.append(p.arena, .{ .name = b.value, .span = b.span });
+                    if (p.peek() != .plus) break;
+                    _ = p.advance();
+                }
+            }
+
+            try list.append(p.arena, .{
+                .name = name.value,
+                .span = name.span,
+                .bounds = try bounds.toOwnedSlice(p.arena),
+            });
             if (p.peek() != .comma) break;
             _ = p.advance();
         }
@@ -390,37 +584,7 @@ const Parser = struct {
             return null;
         };
 
-        _ = try p.expect(.l_paren, "expected `(`", null) orelse {
-            p.recoverToTopLevel();
-            return null;
-        };
-
-        var params: std.ArrayList(ast.Param) = .empty;
-        if (p.peek() != .r_paren) {
-            while (true) {
-                const pname = try p.expect(.ident, "expected a parameter name", null) orelse {
-                    p.recoverToTopLevel();
-                    return null;
-                };
-                _ = try p.expect(.colon, "expected `:`", "every parameter needs a type") orelse {
-                    p.recoverToTopLevel();
-                    return null;
-                };
-                const pty = try p.parseType() orelse {
-                    p.recoverToTopLevel();
-                    return null;
-                };
-                try params.append(p.arena, .{
-                    .name = pname.value,
-                    .name_span = pname.span,
-                    .ty = pty,
-                });
-                if (p.peek() != .comma) break;
-                _ = p.advance();
-            }
-        }
-
-        _ = try p.expect(.r_paren, "expected `)`", null) orelse {
+        const list = try p.parseParamList() orelse {
             p.recoverToTopLevel();
             return null;
         };
@@ -445,7 +609,8 @@ const Parser = struct {
             .name = name_tok.value,
             .name_span = name_tok.span,
             .type_params = type_params,
-            .params = try params.toOwnedSlice(p.arena),
+            .has_self = list.has_self,
+            .params = list.params,
             .ret_ty = ret_ty,
             .body = body,
             .span = Span.merge(kw.span, body.span),
@@ -734,6 +899,33 @@ const Parser = struct {
                     _ = p.advance();
                     const field = try p.expect(.ident, "expected a field name", null) orelse return null;
 
+                    if (p.peek() == .l_paren) {
+                        _ = p.advance();
+                        var args: std.ArrayList(ast.Expr) = .empty;
+                        if (p.peek() != .r_paren) {
+                            while (true) {
+                                const arg = try p.parseExpr() orelse return null;
+                                try args.append(p.arena, arg);
+                                if (p.peek() != .comma) break;
+                                _ = p.advance();
+                            }
+                        }
+                        const close = try p.expect(.r_paren, "expected `)`", "close the method call") orelse return null;
+
+                        const recv = try p.arena.create(ast.Expr);
+                        recv.* = expr;
+                        const call_span = Span.merge(expr.spanOf(), close.span);
+
+                        expr = .{ .method_call = .{
+                            .receiver = recv,
+                            .name = field.value,
+                            .name_span = field.span,
+                            .args = try args.toOwnedSlice(p.arena),
+                            .span = call_span,
+                        } };
+                        continue;
+                    }
+
                     const base = try p.arena.create(ast.Expr);
                     base.* = expr;
                     const merged = Span.merge(expr.spanOf(), field.span);
@@ -811,6 +1003,10 @@ const Parser = struct {
             .kw_match => return try p.parseMatch(),
             .kw_if => return try p.parseIf(),
             .kw_while => return try p.parseWhile(),
+            .kw_self => {
+                const t = p.advance();
+                return .{ .var_ref = .{ .name = "self", .span = t.span } };
+            },
             .kw_true, .kw_false => {
                 const t = p.advance();
                 return .{ .boolean = .{ .value = t.kind == .kw_true, .span = t.span } };
