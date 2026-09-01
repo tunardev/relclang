@@ -1,0 +1,10 @@
+struct Counter {
+    value: Int
+}
+
+fn main() {
+    let mut c = Counter { value: 1 }
+    let shared = &c
+    let exclusive = &mut c
+    println(shared.value)
+}

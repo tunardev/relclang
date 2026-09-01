@@ -116,6 +116,7 @@ pub fn tokenize(
             '%' => .percent,
             '.' => .dot,
             ';' => .semicolon,
+            '&' => .ampersand,
             '[' => .l_bracket,
             ']' => .r_bracket,
             '<' => .lt,

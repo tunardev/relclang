@@ -116,6 +116,12 @@ fn resolveType(
             );
             return .invalid;
         },
+        .ref => |r| {
+            const target = try resolveType(arena, table, r.target.*, diags);
+            const ptr = try arena.create(types.Type);
+            ptr.* = target;
+            return .{ .ref = .{ .mutable = r.mutable, .target = ptr } };
+        },
         .array => |a| {
             const elem = try resolveType(arena, table, a.elem.*, diags);
 
@@ -150,6 +156,7 @@ fn structDepth(
     for (structs[index].fields) |field| {
         var ty = field.ty;
         while (ty == .array) ty = ty.array.elem.*;
+        if (ty == .ref) continue;
         if (ty == .strukt and structDepth(structs, ty.strukt, seen, done)) return true;
     }
 

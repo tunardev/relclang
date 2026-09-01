@@ -44,6 +44,21 @@ It also has enums with associated values and pattern matching:
         }
     }
 
+Values are owned. Structs and enums move when you pass them; integers,
+booleans, strings and references copy. Using a value after it moved is
+a compile error:
+
+    let a = Point { x: 1, y: 2 }
+    let b = a
+    println(a.x)      # error: use of moved value `a`
+
+Borrow it instead with `&` or `&mut`:
+
+    fn dist2(a: &Point, b: &Point) -> Int { ... }
+    fn bump(p: &mut Point) { p.x = p.x + 1 }
+
+A value can have many shared borrows or one mutable borrow, never both.
+
 The last line of a function body is its return value. There is no
 `return` keyword yet. Arrays have a fixed length that is part of their
 type, written `[Int; 3]`. Slices do not exist yet. Every `match` must

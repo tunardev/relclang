@@ -8,22 +8,25 @@ struct Line {
     to: Point
 }
 
-fn dist2(a: Point, b: Point) -> Int {
+fn dist2(a: &Point, b: &Point) -> Int {
     let dx = a.x - b.x
     let dy = a.y - b.y
     dx * dx + dy * dy
 }
 
-fn bump(p: Point) -> Point {
-    Point { x: p.x + 1, y: p.y + 1 }
+fn bump(p: &mut Point) {
+    p.x = p.x + 1
 }
 
 fn main() {
     let a = Point { x: 10, y: 20 }
     let b = Point { x: 15, y: 25 }
-    println(dist2(a, b))
+    println(dist2(&a, &b))
 
     let l = Line { from: a, to: b }
     println(l.to.x)
-    println(bump(a).x)
+
+    let mut c = Point { x: 10, y: 20 }
+    bump(&mut c)
+    println(c.x)
 }

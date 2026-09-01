@@ -1,0 +1,9 @@
+error[E0030]: cannot borrow `c` mutably
+
+  --> borrow_conflict.rls:8:21
+   |
+ 8 |     let exclusive = &mut c
+   |                     ^^^^^^ it is already borrowed
+   |
+help: a mutable borrow must be the only borrow
+

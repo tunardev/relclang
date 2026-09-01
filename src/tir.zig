@@ -48,6 +48,19 @@ pub const While = struct {
     span: Span,
 };
 
+pub const BorrowExpr = struct {
+    mutable: bool,
+    operand: *const Expr,
+    ty: types.Type,
+    span: Span,
+};
+
+pub const Deref = struct {
+    operand: *const Expr,
+    ty: types.Type,
+    span: Span,
+};
+
 pub const StringConst = struct {
     value: []const u8,
     ty: types.Type,
@@ -163,6 +176,8 @@ pub const Expr = union(enum) {
     match: Match,
     if_expr: If,
     while_expr: While,
+    borrow: BorrowExpr,
+    deref: Deref,
 
     pub fn typeOf(e: Expr) types.Type {
         return switch (e) {
@@ -182,6 +197,8 @@ pub const Expr = union(enum) {
             .match => |m| m.ty,
             .if_expr => |i| i.ty,
             .while_expr => .void,
+            .borrow => |b| b.ty,
+            .deref => |d| d.ty,
         };
     }
 
@@ -203,6 +220,8 @@ pub const Expr = union(enum) {
             .match => |m| m.span,
             .if_expr => |i| i.span,
             .while_expr => |x| x.span,
+            .borrow => |b| b.span,
+            .deref => |d| d.span,
         };
     }
 };

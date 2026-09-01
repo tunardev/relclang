@@ -256,3 +256,143 @@ test "a moved value cannot be returned twice" {
     defer d.deinit();
     try testing.expect(has(d, .use_after_move));
 }
+
+const counter =
+    \\struct C {
+    \\    v: Int
+    \\}
+    \\
+    \\fn read(c: &C) -> Int {
+    \\    c.v
+    \\}
+    \\
+    \\fn take(c: C) -> Int {
+    \\    c.v
+    \\}
+    \\
+;
+
+test "a shared borrow does not move" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn main() {
+        \\    let c = C { v: 1 }
+        \\    println(read(&c))
+        \\    println(read(&c))
+        \\    println(take(c))
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}
+
+test "many shared borrows coexist" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn main() {
+        \\    let c = C { v: 1 }
+        \\    let a = &c
+        \\    let b = &c
+        \\    println(read(a) + read(b))
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}
+
+test "a mutable borrow conflicts with a shared one" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn main() {
+        \\    let mut c = C { v: 1 }
+        \\    let a = &c
+        \\    let b = &mut c
+        \\    println(read(a))
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .borrow_conflict));
+}
+
+test "two mutable borrows conflict" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn main() {
+        \\    let mut c = C { v: 1 }
+        \\    let a = &mut c
+        \\    let b = &mut c
+        \\    println(c.v)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .borrow_conflict));
+}
+
+test "moving while borrowed reports E0031" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn main() {
+        \\    let c = C { v: 1 }
+        \\    let r = &c
+        \\    println(take(c))
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .move_while_borrowed));
+}
+
+test "assigning while borrowed reports E0030" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn main() {
+        \\    let mut c = C { v: 1 }
+        \\    let r = &c
+        \\    c = C { v: 2 }
+        \\    println(c.v)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .borrow_conflict));
+}
+
+test "a mutable borrow of an immutable binding is rejected" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn main() {
+        \\    let c = C { v: 1 }
+        \\    let m = &mut c
+        \\    println(c.v)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(has(d, .immutable_assign));
+}
+
+test "mutating through a mutable reference is allowed" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn bump(c: &mut C) {
+        \\    c.v = c.v + 1
+        \\}
+        \\fn main() {
+        \\    let mut c = C { v: 1 }
+        \\    bump(&mut c)
+        \\    println(c.v)
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}
+
+test "references are copy so they can be passed twice" {
+    var d = try checkText(testing.allocator, counter ++
+        \\fn main() {
+        \\    let c = C { v: 1 }
+        \\    let r = &c
+        \\    println(read(r) + read(r))
+        \\}
+        \\
+    );
+    defer d.deinit();
+    try testing.expect(!d.hasErrors());
+}

@@ -14,6 +14,13 @@ const State = enum {
     moved,
 };
 
+const ActiveBorrow = struct {
+    slot: u32,
+    mutable: bool,
+    temporary: bool,
+    span: Span,
+};
+
 const Checker = struct {
     gpa: std.mem.Allocator,
     diags: *diagnostics.Diagnostics,
@@ -23,6 +30,75 @@ const Checker = struct {
     func: tir.Function,
     states: []State,
     moved_at: []Span,
+    borrows: std.ArrayList(ActiveBorrow),
+    persist_borrows: bool,
+
+    fn borrowOf(c: *Checker, slot: u32) ?ActiveBorrow {
+        for (c.borrows.items) |b| {
+            if (b.slot == slot) return b;
+        }
+        return null;
+    }
+
+    fn exclusiveOf(c: *Checker, slot: u32) ?ActiveBorrow {
+        for (c.borrows.items) |b| {
+            if (b.slot == slot and b.mutable) return b;
+        }
+        return null;
+    }
+
+    fn rootSlot(c: *Checker, expr: tir.Expr) ?u32 {
+        return switch (expr) {
+            .local_ref => |l| l.slot,
+            .field => |f| c.rootSlot(f.base.*),
+            .index => |x| c.rootSlot(x.base.*),
+            .deref => |d| c.rootSlot(d.operand.*),
+            else => null,
+        };
+    }
+
+    fn registerBorrow(c: *Checker, expr: tir.BorrowExpr) Error!void {
+        const slot = c.rootSlot(expr.operand.*) orelse return;
+        const local = c.func.locals[slot];
+
+        if (expr.mutable) {
+            if (c.borrowOf(slot)) |existing| {
+                try c.diags.err(
+                    .borrow_conflict,
+                    expr.span,
+                    try c.diags.fmt("cannot borrow `{s}` mutably", .{local.name}),
+                    if (existing.mutable) "it is already borrowed mutably" else "it is already borrowed",
+                    "a mutable borrow must be the only borrow",
+                );
+            }
+        } else if (c.exclusiveOf(slot)) |_| {
+            try c.diags.err(
+                .borrow_conflict,
+                expr.span,
+                try c.diags.fmt("cannot borrow `{s}`", .{local.name}),
+                "it is already borrowed mutably",
+                "a mutable borrow must be the only borrow",
+            );
+        }
+
+        try c.borrows.append(c.gpa, .{
+            .slot = slot,
+            .mutable = expr.mutable,
+            .temporary = !c.persist_borrows,
+            .span = expr.span,
+        });
+    }
+
+    fn dropTemporaries(c: *Checker) void {
+        var i: usize = 0;
+        while (i < c.borrows.items.len) {
+            if (c.borrows.items[i].temporary) {
+                _ = c.borrows.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
 
     fn tyName(c: *Checker, ty: types.Type) Error![]const u8 {
         return types.nameOf(c.diags.arena.allocator(), .{
@@ -77,6 +153,13 @@ const Checker = struct {
             .if_expr => |node| try c.checkIf(node),
             .while_expr => |node| try c.checkWhile(node),
             .match => |m| try c.checkMatch(m),
+
+            .deref => |d| try c.read(d.operand.*),
+
+            .borrow => |b| {
+                try c.read(b.operand.*);
+                try c.registerBorrow(b);
+            },
         }
     }
 
@@ -88,6 +171,18 @@ const Checker = struct {
                     return;
                 }
                 if (!types.isCopy(l.ty)) {
+                    if (c.borrowOf(l.slot)) |b| {
+                        const local = c.func.locals[l.slot];
+                        try c.diags.err(
+                            .move_while_borrowed,
+                            l.span,
+                            try c.diags.fmt("cannot move `{s}` while it is borrowed", .{local.name}),
+                            "moved here",
+                            "the borrow is still in scope",
+                        );
+                        _ = b;
+                        return;
+                    }
                     c.states[l.slot] = .moved;
                     c.moved_at[l.slot] = l.span;
                 }
@@ -125,8 +220,18 @@ const Checker = struct {
     }
 
     fn checkBlock(c: *Checker, block: tir.Block) Error!void {
-        for (block.stmts) |stmt| try c.checkStmt(stmt);
-        if (block.result) |r| try c.consume(r.*);
+        const mark = c.borrows.items.len;
+        defer c.borrows.shrinkRetainingCapacity(mark);
+
+        for (block.stmts) |stmt| {
+            try c.checkStmt(stmt);
+            c.dropTemporaries();
+        }
+
+        if (block.result) |r| {
+            try c.consume(r.*);
+            c.dropTemporaries();
+        }
     }
 
     fn checkStmt(c: *Checker, stmt: tir.Stmt) Error!void {
@@ -134,6 +239,19 @@ const Checker = struct {
             .expr => |e| try c.read(e),
             .assign => |a| {
                 try c.consume(a.value);
+
+                if (c.rootSlot(a.target)) |slot| {
+                    if (c.borrowOf(slot)) |_| {
+                        const local = c.func.locals[slot];
+                        try c.diags.err(
+                            .borrow_conflict,
+                            a.span,
+                            try c.diags.fmt("cannot assign to `{s}` while it is borrowed", .{local.name}),
+                            "assigned here",
+                            "the borrow is still in scope",
+                        );
+                    }
+                }
 
                 if (a.target == .local_ref) {
                     c.states[a.target.local_ref.slot] = .owned;
@@ -143,7 +261,10 @@ const Checker = struct {
                 try c.read(a.target);
             },
             .let => |l| {
+                const saved = c.persist_borrows;
+                c.persist_borrows = true;
                 try c.consume(l.init);
+                c.persist_borrows = saved;
                 c.states[l.slot] = .owned;
             },
         }
@@ -239,6 +360,9 @@ pub fn check(
         @memset(moved_at, source.Span.zero);
         for (0..func.param_count) |i| states[i] = .owned;
 
+        var borrows: std.ArrayList(ActiveBorrow) = .empty;
+        defer borrows.deinit(gpa);
+
         var c: Checker = .{
             .gpa = gpa,
             .diags = diags,
@@ -248,8 +372,11 @@ pub fn check(
             .func = func,
             .states = states,
             .moved_at = moved_at,
+            .borrows = borrows,
+            .persist_borrows = false,
         };
 
         try c.checkBlock(func.body);
+        borrows = c.borrows;
     }
 }

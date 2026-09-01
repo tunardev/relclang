@@ -9,10 +9,16 @@ pub const Type = union(enum) {
     strukt: u32,
     enumeration: u32,
     array: Array,
+    ref: Ref,
 
     pub const Array = struct {
         elem: *const Type,
         len: u64,
+    };
+
+    pub const Ref = struct {
+        mutable: bool,
+        target: *const Type,
     };
 
     pub fn eql(a: Type, b: Type) bool {
@@ -25,6 +31,7 @@ pub const Type = union(enum) {
             .strukt => |i| b == .strukt and b.strukt == i,
             .enumeration => |i| b == .enumeration and b.enumeration == i,
             .array => |x| b == .array and x.len == b.array.len and eql(x.elem.*, b.array.elem.*),
+            .ref => |r| b == .ref and r.mutable == b.ref.mutable and eql(r.target.*, b.ref.target.*),
         };
     }
 
@@ -32,6 +39,7 @@ pub const Type = union(enum) {
         return switch (t) {
             .invalid => true,
             .array => |a| a.elem.isInvalid(),
+            .ref => |r| r.target.isInvalid(),
             else => false,
         };
     }
@@ -80,6 +88,7 @@ pub const Registry = struct {
 pub fn isCopy(t: Type) bool {
     return switch (t) {
         .void, .bool, .int, .str, .invalid => true,
+        .ref => true,
         .strukt, .enumeration => false,
         .array => |a| isCopy(a.elem.*),
     };
@@ -97,6 +106,10 @@ pub fn nameOf(arena: std.mem.Allocator, reg: Registry, t: Type) ![]const u8 {
         .array => |a| std.fmt.allocPrint(arena, "[{s}; {d}]", .{
             try nameOf(arena, reg, a.elem.*),
             a.len,
+        }),
+        .ref => |r| std.fmt.allocPrint(arena, "&{s}{s}", .{
+            if (r.mutable) "mut " else "",
+            try nameOf(arena, reg, r.target.*),
         }),
     };
 }
@@ -170,6 +183,27 @@ test "an array is copy exactly when its element is" {
     const p_ty: Type = .{ .strukt = 0 };
     try testing.expect(isCopy(.{ .array = .{ .elem = &int_ty, .len = 3 } }));
     try testing.expect(!isCopy(.{ .array = .{ .elem = &p_ty, .len = 3 } }));
+}
+
+test "references are copy and compare by mutability and target" {
+    const int_ty: Type = .int;
+    const shared: Type = .{ .ref = .{ .mutable = false, .target = &int_ty } };
+    const exclusive: Type = .{ .ref = .{ .mutable = true, .target = &int_ty } };
+
+    try testing.expect(isCopy(shared));
+    try testing.expect(Type.eql(shared, .{ .ref = .{ .mutable = false, .target = &int_ty } }));
+    try testing.expect(!Type.eql(shared, exclusive));
+}
+
+test "reference names render with mut" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const reg: Registry = .{ .structs = &.{}, .enums = &.{} };
+    const int_ty: Type = .int;
+
+    try testing.expectEqualStrings("&Int", try nameOf(arena, reg, .{ .ref = .{ .mutable = false, .target = &int_ty } }));
+    try testing.expectEqualStrings("&mut Int", try nameOf(arena, reg, .{ .ref = .{ .mutable = true, .target = &int_ty } }));
 }
 
 test "an array of invalid is invalid" {

@@ -1,0 +1,9 @@
+error[E0031]: cannot move `c` while it is borrowed
+
+   --> move_while_borrowed.rls:12:18
+    |
+ 12 |     println(take(c))
+    |                  ^ moved here
+    |
+help: the borrow is still in scope
+

@@ -1,0 +1,13 @@
+struct Counter {
+    value: Int
+}
+
+fn take(c: Counter) -> Int {
+    c.value
+}
+
+fn main() {
+    let c = Counter { value: 1 }
+    let r = &c
+    println(take(c))
+}

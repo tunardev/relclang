@@ -85,6 +85,10 @@ fn emitType(w: *std.Io.Writer, program: tir.Program, ty: types.Type) Error!void 
         .bool => try w.writeAll("bool"),
         .int => try w.writeAll("i64"),
         .str => try w.writeAll("[]const u8"),
+        .ref => |r| {
+            try w.writeAll(if (r.mutable) "*" else "*const ");
+            try emitType(w, program, r.target.*);
+        },
         .strukt => |i| try w.print("S{d}_{s}", .{ i, program.structs[i].name }),
         .enumeration => |i| try w.print("E{d}_{s}", .{ i, program.enums[i].name }),
         .array => |a| {
@@ -331,6 +335,18 @@ fn emitExpr(w: *std.Io.Writer, program: tir.Program, f: tir.Function, lbl: *u32,
                 try w.writeAll(" }");
             }
             try w.writeAll(" }");
+        },
+
+        .borrow => |b| {
+            try w.writeAll("&(");
+            try emitExpr(w, program, f, lbl, b.operand.*);
+            try w.writeAll(")");
+        },
+
+        .deref => |d| {
+            try w.writeAll("(");
+            try emitExpr(w, program, f, lbl, d.operand.*);
+            try w.writeAll(").*");
         },
 
         .match => |m| try emitMatch(w, program, f, lbl, m),

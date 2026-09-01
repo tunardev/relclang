@@ -181,8 +181,19 @@ fn rootPlace(f: *Fn, expr: tir.Expr) ?Place {
         },
         .field => |fa| rootPlace(f, fa.base.*),
         .index => |x| rootPlace(f, x.base.*),
+        .deref => |d| derefPlace(f, d.operand.*),
         else => null,
     };
+}
+
+fn derefPlace(f: *Fn, expr: tir.Expr) ?Place {
+    const ty = expr.typeOf();
+    if (ty != .ref) return rootPlace(f, expr);
+
+    if (rootPlace(f, expr)) |place| {
+        return .{ .slot = place.slot, .is_mut = ty.ref.mutable, .name = place.name };
+    }
+    return null;
 }
 
 fn lowerAssign(f: *Fn, a: ast.Assign) Error!?tir.Stmt {
@@ -414,6 +425,21 @@ fn lowerStmt(f: *Fn, stmt: ast.Stmt, wants_value: bool) Error!?tir.Stmt {
     }
 }
 
+fn autoDeref(f: *Fn, e: tir.Expr) Error!tir.Expr {
+    var current = e;
+    while (current.typeOf() == .ref) {
+        const target = current.typeOf().ref.target.*;
+        const boxed = try f.box(current);
+        const span = current.spanOf();
+        current = .{ .deref = .{
+            .operand = boxed,
+            .ty = target,
+            .span = span,
+        } };
+    }
+    return current;
+}
+
 fn resolveLocalType(f: *Fn, expr: ast.TypeExpr) Error!Type {
     switch (expr) {
         .named => |n| {
@@ -427,6 +453,12 @@ fn resolveLocalType(f: *Fn, expr: ast.TypeExpr) Error!Type {
                 "the built in types are `Int`, `Str` and `Void`",
             );
             return .invalid;
+        },
+        .ref => |r| {
+            const target = try resolveLocalType(f, r.target.*);
+            const ptr = try f.arena.create(Type);
+            ptr.* = target;
+            return .{ .ref = .{ .mutable = r.mutable, .target = ptr } };
         },
         .array => |a| {
             const elem = try resolveLocalType(f, a.elem.*);
@@ -661,8 +693,45 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
 
         .struct_lit => |s| return lowerStructLit(f, s),
 
+        .borrow => |b| {
+            const operand = try lowerExpr(f, b.operand.*);
+            const target = try f.arena.create(Type);
+            target.* = operand.typeOf();
+
+            if (b.mutable) {
+                if (rootPlace(f, operand)) |place| {
+                    f.locals.items[place.slot].assigned = true;
+                    if (!place.is_mut) {
+                        try f.diags.err(
+                            .immutable_assign,
+                            b.span,
+                            try f.diags.fmt("cannot borrow `{s}` mutably", .{place.name}),
+                            "this binding is not mutable",
+                            try f.diags.fmt("declare it with `let mut {s} = ...`", .{place.name}),
+                        );
+                    }
+                } else {
+                    try f.diags.err(
+                        .not_assignable,
+                        b.span,
+                        "cannot take a mutable reference to this expression",
+                        "not a variable, field or element",
+                        null,
+                    );
+                }
+            }
+
+            return .{ .borrow = .{
+                .mutable = b.mutable,
+                .operand = try f.box(operand),
+                .ty = .{ .ref = .{ .mutable = b.mutable, .target = target } },
+                .span = b.span,
+            } };
+        },
+
         .field => |fa| {
-            const base = try lowerExpr(f, fa.base.*);
+            const raw_base = try lowerExpr(f, fa.base.*);
+            const base = try autoDeref(f, raw_base);
             const base_ty = base.typeOf();
 
             if (base_ty.isInvalid()) {
@@ -744,7 +813,8 @@ fn lowerExpr(f: *Fn, expr: ast.Expr) Error!tir.Expr {
         },
 
         .index => |x| {
-            const base = try lowerExpr(f, x.base.*);
+            const raw_base = try lowerExpr(f, x.base.*);
+            const base = try autoDeref(f, raw_base);
             const idx = try lowerExpr(f, x.index.*);
 
             const idx_ty = idx.typeOf();

@@ -105,6 +105,7 @@ pub const Expr = union(enum) {
     match: Match,
     if_expr: If,
     while_expr: While,
+    borrow: Borrow,
 
     pub fn spanOf(e: Expr) Span {
         return switch (e) {
@@ -122,6 +123,7 @@ pub const Expr = union(enum) {
             .match => |m| m.span,
             .if_expr => |i| i.span,
             .while_expr => |x| x.span,
+            .borrow => |b| b.span,
         };
     }
 };
@@ -163,13 +165,21 @@ pub const Block = struct {
 pub const TypeExpr = union(enum) {
     named: struct { name: []const u8, span: Span },
     array: struct { elem: *const TypeExpr, len_text: []const u8, len_span: Span, span: Span },
+    ref: struct { mutable: bool, target: *const TypeExpr, span: Span },
 
     pub fn spanOf(t: TypeExpr) Span {
         return switch (t) {
             .named => |n| n.span,
             .array => |a| a.span,
+            .ref => |r| r.span,
         };
     }
+};
+
+pub const Borrow = struct {
+    mutable: bool,
+    operand: *const Expr,
+    span: Span,
 };
 
 pub const FieldDecl = struct {

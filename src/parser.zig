@@ -289,6 +289,23 @@ const Parser = struct {
     }
 
     fn parseType(p: *Parser) Error!?ast.TypeExpr {
+        if (p.peek() == .ampersand) {
+            const amp = p.advance();
+            var mutable = false;
+            if (p.peek() == .kw_mut) {
+                _ = p.advance();
+                mutable = true;
+            }
+            const target = try p.parseType() orelse return null;
+            const ptr = try p.arena.create(ast.TypeExpr);
+            ptr.* = target;
+            return .{ .ref = .{
+                .mutable = mutable,
+                .target = ptr,
+                .span = Span.merge(amp.span, target.spanOf()),
+            } };
+        }
+
         if (p.peek() == .l_bracket) {
             const open = p.advance();
             const elem = try p.parseType() orelse return null;
@@ -525,6 +542,23 @@ const Parser = struct {
     }
 
     fn parseUnary(p: *Parser) Error!?ast.Expr {
+        if (p.peek() == .ampersand) {
+            const amp = p.advance();
+            var mutable = false;
+            if (p.peek() == .kw_mut) {
+                _ = p.advance();
+                mutable = true;
+            }
+            const operand = try p.parseUnary() orelse return null;
+            const ptr = try p.arena.create(ast.Expr);
+            ptr.* = operand;
+            return .{ .borrow = .{
+                .mutable = mutable,
+                .operand = ptr,
+                .span = Span.merge(amp.span, operand.spanOf()),
+            } };
+        }
+
         const op: ast.UnOp = switch (p.peek()) {
             .minus => .neg,
             .kw_not => .not,

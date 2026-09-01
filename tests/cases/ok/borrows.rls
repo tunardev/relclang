@@ -1,0 +1,26 @@
+struct Counter {
+    value: Int
+}
+
+fn read(c: &Counter) -> Int {
+    c.value
+}
+
+fn increment(c: &mut Counter) {
+    c.value = c.value + 1
+}
+
+fn main() {
+    let c = Counter { value: 5 }
+    println(read(&c))
+    println(read(&c))
+
+    let r1 = &c
+    let r2 = &c
+    println(read(r1) + read(r2))
+
+    let mut m = Counter { value: 0 }
+    increment(&mut m)
+    increment(&mut m)
+    println(read(&m))
+}
