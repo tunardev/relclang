@@ -1,5 +1,5 @@
 const std = @import("std");
-const cli = @import("cli.zig");
+const cli = @import("driver/cli.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const arena = init.arena.allocator();

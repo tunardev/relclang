@@ -1,7 +1,7 @@
 const std = @import("std");
-const source = @import("source.zig");
-const diagnostics = @import("diagnostics.zig");
-const compile = @import("compile.zig");
+const source = @import("../support/source.zig");
+const diagnostics = @import("../support/diagnostics.zig");
+const compile = @import("pipeline.zig");
 
 pub const version = "0.1.0";
 

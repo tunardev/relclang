@@ -1,10 +1,10 @@
 const std = @import("std");
-const source = @import("source.zig");
-const diagnostics = @import("diagnostics.zig");
-const lexer = @import("lexer.zig");
-const parser = @import("parser.zig");
+const source = @import("../support/source.zig");
+const diagnostics = @import("../support/diagnostics.zig");
+const lexer = @import("../syntax/lexer.zig");
+const parser = @import("../syntax/parser.zig");
 const resolve = @import("resolve.zig");
-const tir = @import("tir.zig");
+const tir = @import("../ir/tir.zig");
 const types = @import("types.zig");
 
 const run = @import("lower.zig").run;

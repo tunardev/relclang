@@ -1,4 +1,4 @@
-const source = @import("source.zig");
+const source = @import("../support/source.zig");
 
 const Span = source.Span;
 

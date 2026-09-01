@@ -1,7 +1,7 @@
 const std = @import("std");
-const source = @import("source.zig");
-const diagnostics = @import("diagnostics.zig");
-const tir = @import("tir.zig");
+const source = @import("../support/source.zig");
+const diagnostics = @import("../support/diagnostics.zig");
+const tir = @import("../ir/tir.zig");
 const types = @import("types.zig");
 
 const Span = source.Span;

@@ -1,5 +1,5 @@
-const source = @import("source.zig");
-const types = @import("types.zig");
+const source = @import("../support/source.zig");
+const types = @import("../sema/types.zig");
 
 const Span = source.Span;
 
